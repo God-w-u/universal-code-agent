@@ -1,0 +1,21 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 测试与覆盖率产物
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 本机配置 / 密钥：只留没有真值的样例（.env.example）
+.env
+.env.*
+!.env.example
+
+# 修复运行的历史记录
+repair_history/
+
+# Windows 快捷方式
+*.lnk

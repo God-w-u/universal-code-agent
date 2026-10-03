@@ -1,0 +1,386 @@
+[
+  {
+    "scenario": "file_name",
+    "query": "retrieval.py",
+    "expected_path": "index/retrieval.py",
+    "note": "文件名查询：只报文件名，第一条该落在这个文件上",
+    "language": "python",
+    "query_lang": "en",
+    "query_type": "lexical"
+  },
+  {
+    "scenario": "symbol",
+    "query": "ChunkIndex.build",
+    "expected_symbol": "ChunkIndex.build",
+    "note": "限定符号查询：带类名的完整符号名",
+    "language": "python",
+    "query_lang": "en",
+    "query_type": "lexical"
+  },
+  {
+    "scenario": "class",
+    "query": "ProjectIndex",
+    "expected_symbol": "ProjectIndex",
+    "note": "类查询：一个类名，应该指向这个类自己的那条 chunk",
+    "language": "python",
+    "query_lang": "en",
+    "query_type": "lexical"
+  },
+  {
+    "scenario": "function",
+    "query": "digest_of",
+    "expected_symbol": "digest_of",
+    "note": "函数查询：顶层函数名",
+    "language": "python",
+    "query_lang": "en",
+    "query_type": "lexical"
+  },
+  {
+    "scenario": "description",
+    "query": "把文件读回来",
+    "expected_symbol": "SymbolIndex.read_verified",
+    "note": "功能描述查询，用词和代码对得上：答案现在在它自己的类后面一名（类 chunk 里含着这段注释）",
+    "language": "python",
+    "query_lang": "zh",
+    "query_type": "semantic"
+  },
+  {
+    "scenario": "description",
+    "query": "校验文件有没有被改过",
+    "expected_symbol": "SymbolIndex.read_verified",
+    "note": "功能描述查询，人话说法、和代码里的词对不上——现在多半一条都查不到；这条是留给 embedding 的靶子，加向量以后回来看它",
+    "language": "python",
+    "query_lang": "zh",
+    "query_type": "semantic"
+  },
+  {
+    "scenario": "keyword",
+    "query": "fsync",
+    "expected_symbol": "RepairHistory._write",
+    "expected_path": "agent/history.py",
+    "note": "代码关键词查询：这个词只在正文里出现；同一句话同时限定文件和符号",
+    "language": "python",
+    "query_lang": "en",
+    "query_type": "lexical"
+  },
+  {
+    "scenario": "nl_zh",
+    "query": "工具调用的结果攒起来，最后一起报告",
+    "expected_symbol": "ToolExecutor._record",
+    "note": "中文人话查询，不出现函数名 / 文件名：问的是「谁在记账」",
+    "language": "python",
+    "query_lang": "zh",
+    "query_type": "semantic"
+  },
+  {
+    "scenario": "nl_zh",
+    "query": "模型每次要动工具都从哪里过一遍",
+    "expected_symbol": "ToolExecutor._run",
+    "note": "中文人话查询：工具执行的入口，字面上和代码里的词对不上",
+    "language": "python",
+    "query_lang": "zh",
+    "query_type": "semantic"
+  },
+  {
+    "scenario": "nl_zh",
+    "query": "上下文太长装不下了怎么办",
+    "expected_symbol": "ContextManager._truncate",
+    "note": "中文人话查询：问截断策略，查询里不出现「截断」两个字",
+    "language": "python",
+    "query_lang": "zh",
+    "query_type": "semantic"
+  },
+  {
+    "scenario": "nl_zh",
+    "query": "先扔掉最没用的那些旧消息",
+    "expected_symbol": "ContextManager._evict",
+    "note": "中文人话查询：淘汰旧消息的那一步，和上一条区分开（截断 vs 淘汰）",
+    "language": "python",
+    "query_lang": "zh",
+    "query_type": "semantic"
+  },
+  {
+    "scenario": "nl_zh",
+    "query": "每次修复都记一笔账",
+    "expected_symbol": "RepairHistory.record",
+    "note": "中文人话查询：修复历史的入口方法（写文件那一步是另一条 case）",
+    "language": "python",
+    "query_lang": "zh",
+    "query_type": "semantic"
+  },
+  {
+    "scenario": "nl_zh",
+    "query": "给一个代码文件生成几句说明",
+    "expected_symbol": "CodeSummaryTool.execute",
+    "note": "中文人话查询：问代码摘要工具怎么用",
+    "language": "python",
+    "query_lang": "zh",
+    "query_type": "semantic"
+  },
+  {
+    "scenario": "nl_zh",
+    "query": "缓存文件读不出来会不会把程序搞崩",
+    "expected_symbol": "VectorCache._load",
+    "note": "中文人话查询：问缓存坏掉的降级行为，字面上没有「降级 / 损坏」这些词",
+    "language": "python",
+    "query_lang": "zh",
+    "query_type": "semantic"
+  },
+  {
+    "scenario": "nl_zh",
+    "query": "不想每次重跑都重新算一遍向量",
+    "expected_symbol": "EmbeddingScorer.prefetch",
+    "note": "中文人话查询：问批量预热为什么存在",
+    "language": "python",
+    "query_lang": "zh",
+    "query_type": "semantic"
+  },
+  {
+    "scenario": "nl_zh",
+    "query": "模型没装上的时候检索还能不能用",
+    "expected_symbol": "DegradingScorer",
+    "note": "中文人话查询：问「语义分坏了就当它不存在」这层包装",
+    "language": "python",
+    "query_lang": "zh",
+    "query_type": "semantic"
+  },
+  {
+    "scenario": "nl_zh",
+    "query": "代码太长模型装不下怎么办",
+    "expected_path": "index/segments.py",
+    "note": "中文人话查询：9.5 新加的切分段模块；只限定文件——这一整块功能都是这个文件的事",
+    "language": "python",
+    "query_lang": "zh",
+    "query_type": "semantic"
+  },
+  {
+    "scenario": "nl_zh",
+    "query": "修复最多试几轮就放弃",
+    "expected_symbol": "RepairLoop",
+    "note": "中文人话查询：问修复轮数上限",
+    "language": "python",
+    "query_lang": "zh",
+    "query_type": "semantic"
+  },
+  {
+    "scenario": "nl_zh",
+    "query": "改完代码跑一遍测试看看行不行",
+    "expected_symbol": "Verifier._run_tests",
+    "note": "中文人话查询：问验证里跑测试的那一步",
+    "language": "python",
+    "query_lang": "zh",
+    "query_type": "semantic"
+  },
+  {
+    "scenario": "nl_en",
+    "query": "how do we know a file changed on disk",
+    "expected_symbol": "SymbolIndex.read_verified",
+    "note": "英文人话查询，目标代码的注释是中文——正是多语言模型该补上的那一段",
+    "language": "python",
+    "query_lang": "en",
+    "query_type": "semantic"
+  },
+  {
+    "scenario": "nl_en",
+    "query": "where are the failed repair attempts written down",
+    "expected_symbol": "RepairHistory._write",
+    "note": "英文人话查询：目标是把历史落盘的那个方法",
+    "language": "python",
+    "query_lang": "en",
+    "query_type": "semantic"
+  },
+  {
+    "scenario": "nl_en",
+    "query": "what happens when a tool raises an exception",
+    "expected_symbol": "ToolExecutor._failed",
+    "note": "英文人话查询：问工具失败时走哪条路",
+    "language": "python",
+    "query_lang": "en",
+    "query_type": "semantic"
+  },
+  {
+    "scenario": "nl_en",
+    "query": "keep the newest messages and drop the oldest ones",
+    "expected_symbol": "ContextManager._evict",
+    "note": "英文人话查询：和中文那条同题，用来比两种查询语言在同一份中文注释上的表现",
+    "language": "python",
+    "query_lang": "en",
+    "query_type": "semantic"
+  },
+  {
+    "scenario": "nl_en",
+    "query": "summarize what a C source file contains",
+    "expected_symbol": "CodeSummaryTool._describe_c",
+    "note": "英文人话查询：问 C 语言那条摘要分支（项目里没有 C 源码，但代码本身在）",
+    "language": "python",
+    "query_lang": "en",
+    "query_type": "semantic"
+  },
+  {
+    "scenario": "nl_en",
+    "query": "walk the project tree without following symlinks",
+    "expected_symbol": "iter_files",
+    "note": "英文人话查询：遍历文件、跳过符号链接",
+    "language": "python",
+    "query_lang": "en",
+    "query_type": "semantic"
+  },
+  {
+    "scenario": "nl_en",
+    "query": "how many rounds of fixing are allowed before giving up",
+    "expected_symbol": "RepairLoop",
+    "note": "英文人话查询：和中文那条同题，对照组",
+    "language": "python",
+    "query_lang": "en",
+    "query_type": "semantic"
+  },
+  {
+    "scenario": "symbol",
+    "query": "get_many",
+    "expected_symbol": "VectorCache.get_many",
+    "note": "方法名查询：小写方法名，不带类名也不带文件名",
+    "language": "python",
+    "query_lang": "en",
+    "query_type": "lexical"
+  },
+  {
+    "scenario": "symbol",
+    "query": "Retriever.search",
+    "expected_symbol": "Retriever.search",
+    "note": "限定符号查询：检索入口，名字在好几个文件里出现过（SearchChunksTool 等），考的正是分不分得清",
+    "language": "python",
+    "query_lang": "en",
+    "query_type": "lexical"
+  },
+  {
+    "scenario": "keyword",
+    "query": "预热",
+    "expected_symbol": "EmbeddingScorer.prefetch",
+    "note": "中文关键词查询：一个词，代码注释里就有，字面检索该能捞到",
+    "language": "python",
+    "query_lang": "zh",
+    "query_type": "lexical"
+  },
+  {
+    "scenario": "keyword",
+    "query": "紧凑文本",
+    "expected_symbol": "compact_text",
+    "note": "中文关键词查询：compact 那一层的核心说法",
+    "language": "python",
+    "query_lang": "zh",
+    "query_type": "lexical"
+  },
+  {
+    "scenario": "nl_zh",
+    "query": "缓冲区满了再写会覆盖谁",
+    "expected_symbol": "RingBuffer.push",
+    "note": "C++ 语料：中文人话查询，问写满之后的行为",
+    "language": "cpp",
+    "query_lang": "zh",
+    "query_type": "semantic",
+    "corpus": "cpp_fixture"
+  },
+  {
+    "scenario": "nl_zh",
+    "query": "从缓冲区里取出一条最旧的数据",
+    "expected_symbol": "RingBuffer.pop",
+    "note": "C++ 语料：中文人话查询，问读取顺序",
+    "language": "cpp",
+    "query_lang": "zh",
+    "query_type": "semantic",
+    "corpus": "cpp_fixture"
+  },
+  {
+    "scenario": "nl_zh",
+    "query": "总共写进去过多少条数据",
+    "expected_symbol": "RingBuffer.total_written",
+    "note": "C++ 语料：中文人话查询，问累计计数——和「现在有几条」是两回事，考区分度",
+    "language": "cpp",
+    "query_lang": "zh",
+    "query_type": "semantic",
+    "corpus": "cpp_fixture"
+  },
+  {
+    "scenario": "keyword",
+    "query": "清空缓冲区",
+    "expected_symbol": "RingBuffer.clear",
+    "note": "C++ 语料：中文关键词查询，注释里就是这几个字",
+    "language": "cpp",
+    "query_lang": "zh",
+    "query_type": "lexical",
+    "corpus": "cpp_fixture"
+  },
+  {
+    "scenario": "nl_en",
+    "query": "read the oldest value back out of the ring buffer",
+    "expected_symbol": "RingBuffer.pop",
+    "note": "C++ 语料：英文人话查询，和中文那条同题",
+    "language": "cpp",
+    "query_lang": "en",
+    "query_type": "semantic",
+    "corpus": "cpp_fixture"
+  },
+  {
+    "scenario": "file_name",
+    "query": "ring_buffer.h",
+    "expected_symbol": "RingBuffer",
+    "expected_path": "ring_buffer.h",
+    "note": "C++ 语料：文件名查询，同时限定头文件里的那个类",
+    "language": "cpp",
+    "query_lang": "en",
+    "query_type": "lexical",
+    "corpus": "cpp_fixture"
+  },
+  {
+    "scenario": "symbol",
+    "query": "total_written",
+    "expected_symbol": "RingBuffer.total_written",
+    "note": "C++ 语料：方法名查询（声明和定义两条 chunk 都算命中）",
+    "language": "cpp",
+    "query_lang": "en",
+    "query_type": "lexical",
+    "corpus": "cpp_fixture"
+  },
+  {
+    "scenario": "nothing",
+    "query": "量子纠缠",
+    "expected_nothing": true,
+    "note": "反例：项目里根本没有这回事，查到反而算错",
+    "query_lang": "zh"
+  },
+  {
+    "scenario": "nothing",
+    "query": "missing_symbol_zzz",
+    "expected_nothing": true,
+    "note": "反例：一个不存在的标识符，不该被凑出结果来",
+    "query_lang": "en"
+  },
+  {
+    "scenario": "nothing",
+    "query": "红烧肉怎么做",
+    "expected_nothing": true,
+    "note": "反例：中文人话、但不是代码问题——语义检索最容易在这里凑出「像」的结果",
+    "query_lang": "zh"
+  },
+  {
+    "scenario": "nothing",
+    "query": "kubernetes_ingress_controller",
+    "expected_nothing": true,
+    "note": "反例：一个和本项目无关的下划线标识符",
+    "query_lang": "en"
+  },
+  {
+    "scenario": "nothing",
+    "query": "世界杯决赛什么时候开始",
+    "expected_nothing": true,
+    "note": "反例：中文整句、跟代码无关。中文整句拆出来就是一个词，代码里出现不了——这份语料上「真查不到」的反例就长这个形状",
+    "query_lang": "zh"
+  },
+  {
+    "scenario": "nothing",
+    "query": "ffmpeg 转码",
+    "expected_nothing": true,
+    "note": "反例：另一个领域的工具。英文那边只挑标识符样的词（ffmpeg / kubernetes_ingress_controller）当反例——英语整句会撞上测试方法名里的 how / to / in（见 README 9.5）",
+    "query_lang": "zh"
+  }
+]
