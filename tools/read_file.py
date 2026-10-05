@@ -11,7 +11,7 @@
 from pathlib import Path
 
 from tools.base import Tool, ToolError
-from tools.paths import check_root, resolve_in_root
+from tools.paths import check_root, is_sensitive_file, resolve_in_root
 from tools.textfile import decode_text, read_bytes, split_lines
 
 
@@ -42,6 +42,16 @@ class ReadFileTool(Tool):
 
     def execute(self, path: str) -> str:
         target = resolve_in_root(path, self.root)
+
+        # 敏感文件（.env、密钥、证书……）在 root 里，围栏拦不住也不该拦，
+        # 但读出来就会进模型上下文——那等于把密钥发给上游。整条挡掉，
+        # 不分成「读一点」还是「全读」。（`.env.example` 这类公开模板放行，
+        # 名单和理由见 tools/paths.py）
+        if is_sensitive_file(target.name):
+            raise ToolError(
+                f"{target.name!r} 是敏感文件（密钥 / 凭据一类），不能读，"
+                f"内容也不会发给模型。要看配置长什么样，读 .env.example。"
+            )
 
         if target.is_dir():
             raise ToolError(f"{path!r} 是目录，不能当文件读（列目录请用 list_files）")

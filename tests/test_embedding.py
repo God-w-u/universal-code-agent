@@ -22,7 +22,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from config import PROJECT_ROOT
 from index import (
     DEFAULT_CORPUS,
     DEFAULT_SCORERS,

@@ -92,6 +92,10 @@ class ChunkIndex:
     符号索引由谁管，和 SymbolIndex 一个规矩：`root=`（或默认）是自己管的，
     build() 开头先建一遍、每次都是全量刷新；`symbols=` 传来的归调用方管，
     没扫过会替它扫一次，扫过的（哪怕已经过时）不碰。
+
+    要立刻拿到最新的切块（文件增删改之后）就调 `refresh()`：它一路级联到
+    文件清单，全部重扫（`build(force=True)`）；默认的 `build()` 一个字不改。
+    检索器每次 search() 都从这份索引现取 chunk，刷完不用做别的。
     """
 
     def __init__(
@@ -106,11 +110,16 @@ class ChunkIndex:
         self._chunks: list[CodeChunk] = []
         self._skipped: list[Skipped] = []
         self._built = False
+        self._generation = 0
 
-    def build(self) -> None:
-        """全量重建：按符号边界把已索引文件的代码切出来。再调一次就是刷新。"""
-        if self._own_symbols or not self.symbols.built:
-            self.symbols.build()
+    def build(self, *, force: bool = False) -> None:
+        """全量重建：按符号边界把已索引文件的代码切出来。再调一次就是刷新。
+
+        `force=True`：连调用方管的符号索引（和它底下的文件清单）也重扫一遍
+        ——`refresh()` 走这条。默认 False 时调用方的东西一次都不碰。
+        """
+        if force or self._own_symbols or not self.symbols.built:
+            self.symbols.build(force=force)
 
         # 符号按文件归堆，一个文件只读一次（digest 也只用核一次）
         grouped: dict[str, list[Symbol]] = {}
@@ -134,12 +143,29 @@ class ChunkIndex:
             if reason is not None:
                 skipped.append(Skipped(entry.path, reason))
                 continue
+            # read_verified 的约定：reason 为 None 时 text 一定有
+            assert text is not None
 
             chunks.extend(_file_chunks(entry, split_lines(text), items))
 
         self._chunks = chunks
         self._skipped = skipped
         self._built = True
+        self._generation += 1
+
+    def refresh(self) -> None:
+        """显式刷新：从文件清单开始整个重扫，切出当前最新的 chunk。
+
+        文件增、删、改之后调它。**删掉的文件不会留下 chunk**——每次都是
+        全量重建，旧的整份换掉（不是往里补）。向量缓存那头的旧向量由
+        `EmbeddingScorer.forget()` / `VectorCache.forget_ids()` 负责清。
+        """
+        self.build(force=True)
+
+    @property
+    def generation(self) -> int:
+        """这份切块索引换过几版：每切一次 +1，0 表示一版都没有。"""
+        return self._generation
 
     @property
     def built(self) -> bool:
@@ -188,7 +214,11 @@ def _file_chunks(
     一模一样时（一行写完的 `struct A { void f(); };`）只留先来的那条，也就是
     外层——内层那条的代码会和它一个字不差。父子关系由 parent 字段挂着，
     外层那条的正文里本来就含着内层。
+
+    调用方保证 entry 是「能读的」那条记录（read_verified 过了）：只有
+    INDEXED 的记录有 digest，chunk 的失效判断全指着它。
     """
+    assert entry.digest is not None
     chunks: list[CodeChunk] = []
     seen: set[tuple[int, int]] = set()
 

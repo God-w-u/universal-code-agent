@@ -42,7 +42,7 @@ Retriever 的评分规则和排序逻辑**，不改 Agent / RepairLoop / Verifie
 import json
 import time
 import unicodedata
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -480,13 +480,17 @@ def _rank(case: EvaluationCase, results: tuple[SearchResult, ...]) -> int | None
     return None
 
 
-def _rate(items: tuple[EvaluationResult, ...], hit) -> float:
+def _rate(
+    items: tuple[EvaluationResult, ...], hit: Callable[[EvaluationResult], bool]
+) -> float:
     if not items:
         return 0.0
     return _count(items, hit) / len(items)
 
 
-def _count(items: tuple[EvaluationResult, ...], hit) -> int:
+def _count(
+    items: tuple[EvaluationResult, ...], hit: Callable[[EvaluationResult], bool]
+) -> int:
     return sum(1 for item in items if hit(item))
 
 

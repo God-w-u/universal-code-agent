@@ -660,10 +660,11 @@ class RunCommandToolAgentTest(RunCommandToolTestBase):
         self.assertEqual(len(agent.get_trace()), 2)
 
     def test_it_is_registered_in_main(self):
-        # main.build_agent() 会去读 API Key，这里把客户端换掉再装配
+        # main.build_agent() 默认会去读 LLM 配置（API Key / 模型名）；把
+        # 客户端整个换成替身，装配不需要任何真实配置，也不会联网
         import main
 
-        with patch("agent.agent.LLMClient", StubClient):
+        with patch("main.LLMClient", StubClient):
             agent = main.build_agent()
 
         self.assertIn("run_command", [tool.name for tool in agent.tools.list()])

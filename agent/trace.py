@@ -2,12 +2,28 @@
 
 刻意保持简单：只有一种事件（工具调用）和一个容器，不做通用事件系统。
 
-注意：本模块只依赖标准库，不导入 tools / agent 里的任何东西。
-tools/executor.py 会调用这里的 Trace，反过来这里不依赖它，避免形成导入环。
+13.2 加了一对可选的观察者回调（on_tool_start / on_tool_end）：HTTP 的流式
+接口靠它在「工具要开始跑」和「工具跑完了」两个时刻拿到通知。观察者只管
+通知，不进 events、不碰执行——Trace 仍然是那份「跑完了的记录」。
+
+13.5 又把 LLM 调用接进同一套观察者机制：on_llm_start / on_llm_end 一对
+（llm/client.py 在每一跳的前后调 start_llm_call / record_llm_call）。和工具
+一样，**这两条通知不进 events**——events 里始终只有「跑完的工具调用」，
+几十处断言按这个形状写的；LLM 的统计单独攒在 llm_calls 里（只有数字、
+model、usage、错误摘要，没有 prompt、没有回复正文、没有 key）。
+
+注意：本模块只依赖标准库，不导入 tools / llm / agent 里的任何东西（llm
+只在 TYPE_CHECKING 里出现，运行时不存在这条依赖）。tools/executor.py 调用
+这里的 Trace，反过来这里不依赖它，避免形成导入环。
 """
 
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    # 只为类型检查：运行时不 import，agent 和 llm 之间没有运行期依赖
+    from llm.client import LLMCallStats
 
 # 目前只有这一种事件。留着这个字段是为了以后要加别的类型时不用改结构。
 TOOL_CALL = "tool_call"
@@ -44,10 +60,42 @@ class Trace:
     """一次 run() 产生的全部执行记录。
 
     由 Agent 每轮新建一个，不同轮之间互不影响。
+
+    on_tool_start / on_tool_end（13.2，都可以不给）：观察者回调，签名分别是
+    `(tool, arguments)` 和 `(event)`。前者在工具**执行之前**调，后者在记下
+    这条之后调。两条注意事项：
+
+    - **不记进 events**：events 里始终只有「跑完了」的那些条；开始通知不是
+      一条记录，不给它添一个半成品事件。
+    - **观察者抛错不影响任何事**：它多半在往网络连接里写，对面断了是常事，
+      不能因为没人接了就把这一轮任务带崩。要停由观察者自己停——api/sse.py
+      就是这么做的，写失败就把自己关掉，后面的通知直接跳过。
+
+    on_llm_start / on_llm_end（13.5，都可以不给）：同一套机制用在模型调用上。
+    签名分别是 `(model, attempt, max_attempts)` 和 `(stats)`（stats 见
+    llm/client.py 的 LLMCallStats）。一次调用重试了几次就有几对通知——每
+    一跳一对，最后一跳的 stats.attempt_count 就是总共试了几次。llm_calls
+    攒着收到的全部 stats，方便跑完回看（同样只有数字，没有正文）。
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        on_tool_start: Callable[[str, dict[str, Any]], None] | None = None,
+        on_tool_end: Callable[[TraceEvent], None] | None = None,
+        on_llm_start: Callable[[str, int, int], None] | None = None,
+        on_llm_end: Callable[["LLMCallStats"], None] | None = None,
+    ) -> None:
         self.events: list[TraceEvent] = []
+        # 这一轮收到的 LLM 调用统计（不进 events，见类 docstring）
+        self.llm_calls: list["LLMCallStats"] = []
+        self._on_tool_start = on_tool_start
+        self._on_tool_end = on_tool_end
+        self._on_llm_start = on_llm_start
+        self._on_llm_end = on_llm_end
+
+    def start_tool_call(self, tool: str, arguments: dict[str, Any]) -> None:
+        """通知一声「要开始调这个工具了」。不产生事件，只给观察者。"""
+        self._notify(self._on_tool_start, tool, dict(arguments))
 
     def record_tool_call(
         self,
@@ -68,7 +116,35 @@ class Trace:
             duration_seconds=duration_seconds,
         )
         self.events.append(event)
+        self._notify(self._on_tool_end, event)
         return event
+
+    def start_llm_call(self, model: str, attempt: int, max_attempts: int) -> None:
+        """通知一声「要问模型了」。一次调用的每一跳都会来一下。
+
+        和 start_tool_call 一个套路：只给观察者，不往 events 里塞半成品。
+        """
+        self._notify(self._on_llm_start, model, attempt, max_attempts)
+
+    def record_llm_call(self, stats: "LLMCallStats") -> None:
+        """收下一次模型调用的统计（成功、失败、重试各一跳都会来）。
+
+        stats 进 llm_calls 留档，同时通知观察者——llm_end 事件就是它。
+        """
+        self.llm_calls.append(stats)
+        self._notify(self._on_llm_end, stats)
+
+    @staticmethod
+    def _notify(callback: Callable[..., None] | None, *args: Any) -> None:
+        """叫一声观察者；它炸了就当没发生过（见类 docstring）。"""
+        if callback is None:
+            return
+        try:
+            callback(*args)
+        except Exception:
+            # 故意的：观察者是外人（网络连接之类），它的错不归 Trace 管，
+            # 更不能顺着 ToolExecutor 的调用栈把这一轮任务变成失败
+            pass
 
     def to_dicts(self) -> list[dict[str, Any]]:
         """整份记录转成普通字典列表，方便存文件或打日志。"""
@@ -77,5 +153,5 @@ class Trace:
     def __len__(self) -> int:
         return len(self.events)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[TraceEvent]:
         return iter(self.events)

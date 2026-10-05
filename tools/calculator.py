@@ -53,10 +53,12 @@ def _eval_node(node: ast.AST) -> Any:
             raise ToolError("除数不能为 0") from None
 
     if isinstance(node, ast.UnaryOp):
-        func = _UNARY_OPS.get(type(node.op))
-        if func is None:
+        # 单独一个名字：和上面二元那张表取出来的可调用对象不是一个签名
+        # （一个收两个参数、一个收一个），共用一个变量类型对不上
+        unary = _UNARY_OPS.get(type(node.op))
+        if unary is None:
             raise ToolError(f"不支持的一元运算符：{type(node.op).__name__}")
-        return func(_eval_node(node.operand))
+        return unary(_eval_node(node.operand))
 
     # 变量、函数调用、属性访问等一律拒绝
     raise ToolError(f"表达式里不允许出现 {type(node).__name__}")

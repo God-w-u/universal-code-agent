@@ -1,0 +1,47 @@
+# 只放静态检查工具的配置（ruff / mypy），**不是打包用的工程文件**——
+# 这个项目不发布成包，也没有 [build-system]。
+#
+# 跑法（工具在 requirements-dev.txt 里，装在 .venv）：
+#     .venv/Scripts/python.exe -m ruff check .
+#     .venv/Scripts/python.exe -m mypy
+#
+# mypy 不带参数就用下面 files 列的那几项（生产代码；tests/ 不查，见 README）。
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+# 刻意只开保守的一档：E4/E7/E9（导入、语句、运行时可执行性）+ F（pyflakes：
+# 未用的导入 / 变量、未定义的名字、重复定义）。这几条几乎不会误报，命中就是
+# 真问题。更花哨的规则集（Bugbear、Simplify、RUF……）在既有代码上会刷出上百条
+# 风格建议，改动量大于收益，故不开。想看得更严：ruff check --select ALL。
+select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+python_version = "3.10"
+# 只查生产代码。tests/ 里有大量替身类（假客户端、假 sandbox），为它们补标注
+# 换不来什么（真正的形状检查在运行时），噪音远大于收益。run_tests.py 是给人
+# 跑的一键入口，和 ruff 那边扫的范围对齐，所以也查。
+files = [
+    "agent",
+    "api",
+    "callgraph",
+    "index",
+    "llm",
+    "memory",
+    "sandbox",
+    "tools",
+    "config.py",
+    "main.py",
+    "run_tests.py",
+]
+# sentence-transformers 这类可选依赖没装也能跑测试，装了才有类型；不因为
+# 「没装」就报一堆 import 错。
+ignore_missing_imports = true
+
+# 关掉 override 这一条，理由是在 tools/base.py：基类 Tool.execute 的签名是
+# (**kwargs: Any) -> str（工具参数由 parameters 描述、进基类前先过
+# validate_args），每个子类都按自己的参数表把签名收窄——这正是设计想要的，
+# 而且每个工具的参数校验本来就是运行时做的。12 个工具都会被这一条刷屏，
+# 修它只有两种写法：给每个类加 # type: ignore，或者把基类改成 Any 满天飞。
+disable_error_code = ["override"]

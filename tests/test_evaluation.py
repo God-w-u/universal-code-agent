@@ -7,6 +7,9 @@ embedding 的好坏。所以这儿用完全可控的临时项目把名次钉死�
 
 真项目那组只验「跑得通、结果稳、没崩」，**不背具体命中率**：语料一变
 （加个文件、改句注释）名次就会动，把当期数字写死在测试里，明天就是假红。
+
+这个文件测的是「尺子准不准」（功能）；自带 case 集在真语料上的**效果回归**
+（Hit@1/3/5 的下限快照、分组、反例）在 tests/test_evaluation_regression.py。
 """
 
 import json
@@ -15,12 +18,10 @@ import unittest
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
-from config import PROJECT_ROOT
 from index import (
     DEFAULT_CORPUS,
     EvaluationCase,
     EvaluationReport,
-    EvaluationResult,
     Evaluator,
     Retriever,
     load_cases,

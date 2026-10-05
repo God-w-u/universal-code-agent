@@ -124,7 +124,9 @@ def reset_cache() -> None:
     vcvars_env.cache_clear()
 
 
-def _run(command, shell: bool = False) -> subprocess.CompletedProcess | None:
+def _run(
+    command: str | list[str], shell: bool = False
+) -> subprocess.CompletedProcess | None:
     """跑一条固定的内部命令；起不来（超时、权限、找不到）返回 None。
 
     失败一律返回 None 而不是抛异常：这个模块的调用方只想知道

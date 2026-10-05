@@ -77,7 +77,11 @@ class ProjectIndex:
         index.entries               # 全部记录（含没收进来的）
         index.files("python")       # 只要已索引的 Python 文件
 
-    文件改过、加过、删过之后想刷新，再调一次 build() 就是全量重建。
+    文件改过、加过、删过之后想刷新，再调一次 build() 就是全量重建；显式的
+    话说 `refresh()`，两件事一模一样（这一层是全量的，没有可省的部分）。
+
+    `generation` 记着这份清单换过几版：上面的符号 / 切块 / 调用图索引拿它
+    判断「我手上这份下游数据还是不是对着最新的清单」。
 
     root 不合法（磁盘根、系统目录、不存在）在构造时就抛 ToolError——
     牢笼得在开始扫之前就成立。
@@ -91,6 +95,7 @@ class ProjectIndex:
         self.root = check_root(root)
         self._entries: dict[str, IndexedFile] = {}
         self._built = False
+        self._generation = 0
 
     def build(self) -> None:
         """全量扫描 root，重建索引。再调一次就是「刷新」。"""
@@ -109,6 +114,25 @@ class ProjectIndex:
         # 扫完才换上新的：中途万一出了意外，手上这份旧索引还是完整的
         self._entries = entries
         self._built = True
+        self._generation += 1
+
+    def refresh(self) -> None:
+        """显式刷新：全量重扫一遍（文件增、删、改之后调它）。
+
+        和再调一次 `build()` 是同一件事——这一层本来就是全量的。留这个名字
+        是为了让「刷新」在调用方读起来是一个动作，而不是猜「再 build 一次
+        算不算刷新」。
+        """
+        self.build()
+
+    @property
+    def generation(self) -> int:
+        """这份清单换过几版：0 是「一版都没有」，每扫成一次 +1。
+
+        上面的索引拿它判断自己是不是对着旧清单建的——调用方能拿同一份
+        ProjectIndex 去问别人重扫了没有（index/symbols.py、callgraph）。
+        """
+        return self._generation
 
     @property
     def built(self) -> bool:

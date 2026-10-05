@@ -266,6 +266,18 @@ class StrategyIdTest(unittest.TestCase):
         self.assertIn(SEGMENT_STRATEGY, value)
         self.assertNotEqual(value, TEXT_STRATEGY)
 
+    def test_the_window_joins_the_identity(self):
+        # 段怎么切由窗口定：同样的 key（#s0）在窗口变了以后指的是另一段
+        # 文本。窗口不进身份，就是「同一批 key 对着两批向量」
+        self.assertNotEqual(strategy_id(True, 128), strategy_id(True, 256))
+        self.assertIn("128", strategy_id(True, 128))
+
+    def test_no_window_is_the_9_5_value(self):
+        self.assertEqual(strategy_id(True, None), strategy_id(True))
+
+    def test_without_segments_the_window_is_irrelevant(self):
+        self.assertEqual(strategy_id(False, 128), TEXT_STRATEGY)
+
 
 # ---------------------------------------------------------------------------
 # 2. EmbeddingScorer：一个块多个向量，打分取最像的那段
@@ -450,6 +462,45 @@ class CacheKeyTest(unittest.TestCase):
         self.assertNotEqual(cut.namespace, whole.namespace)
         self.assertNotEqual(cut.path, whole.path)
         self.assertNotIn(SEGMENT_STRATEGY, whole.namespace)
+
+    def test_a_different_window_lands_in_a_different_namespace(self):
+        # 同一个类、同一个模型名（StubEmbedder 没有 model_name，namespace_of
+        # 只看得到类名），只有窗口不同——模型身份一个字没变。窗口必须是身份
+        # 的一部分，否则换窗口会静默复用按老窗口切出来的向量
+        narrow = StubEmbedder(window=40)
+        wide = StubEmbedder(window=128)
+        self.assertEqual(namespace_of(narrow), namespace_of(wide))
+
+        self.assertNotEqual(
+            cache_for(narrow, self.directory).namespace,
+            cache_for(wide, self.directory).namespace,
+        )
+        self.assertNotEqual(
+            cache_for(narrow, self.directory).path,
+            cache_for(wide, self.directory).path,
+        )
+
+    def test_a_different_window_does_not_reuse_the_old_segments(self):
+        chunk = self.chunk
+        # 前提：两个窗口切出来的段真的不一样，不然这条测试什么也证明不了
+        self.assertNotEqual(
+            segment_chunk(chunk, 40), segment_chunk(chunk, 128)
+        )
+
+        narrow = StubEmbedder(window=40)
+        first = EmbeddingScorer(narrow, cache=cache_for(narrow, self.directory), chunks=(chunk,))
+        first.prefetch()
+        first.flush_cache()
+
+        wide = StubEmbedder(window=128)
+        again = EmbeddingScorer(wide, cache=cache_for(wide, self.directory), chunks=(chunk,))
+
+        embedded = again.prefetch()
+
+        # 一条都不许命中：老文件里那些 #s0 是按窗口 40 切的
+        self.assertGreater(embedded, 0)
+        self.assertEqual(again.cache_hits, 0)
+        self.assertEqual(wide.batches[0], segment_chunk(chunk, 128))
 
     def test_an_embedder_without_a_window_keeps_the_old_namespace(self):
         embedder = FakeEmbedder((("校验",),))

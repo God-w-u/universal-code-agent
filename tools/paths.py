@@ -7,6 +7,7 @@
 这三种逃逸方式就一起被堵住了。
 """
 
+import fnmatch
 import re
 from pathlib import Path
 
@@ -42,6 +43,60 @@ def _sensitive_hit(path: Path) -> str | None:
         if part.lower() in _SENSITIVE_NAMES:
             return part
     return None
+
+
+# 一律不读、不列、不搜的**文件名**（支持通配）。
+#
+# 和上面的 _SENSITIVE_NAMES 是两件事，别混：那一条管的是「root 能不能
+# 选在这儿」，只在构造工具时校验一次；这一条管的是「root 里面哪些文件
+# 不能碰」，每次遍历 / 读取都要问一遍。
+#
+# 为什么需要它：这些文件本来就在 root 里，`resolve_in_root` 拦不住也不
+# 该拦。但 list_files / search_code / 索引会按内容把它们吐出来，一句
+# `search_code "OPENAI_API_KEY"` 就能把密钥原文送进模型上下文——
+# 送出去就收不回来了。所以按名字整条排掉：不看内容（看内容本身就等于
+# 读过了），也不给「就这一次」的例外。
+SENSITIVE_FILES = (
+    ".env",
+    ".env.*",
+    "*.pem",
+    "*.key",
+    "*.p12",
+    "*.pfx",
+    "*.jks",
+    "id_rsa*",
+    "id_dsa*",
+    "id_ecdsa*",
+    "id_ed25519*",
+    "*.ppk",
+    ".netrc",
+    ".pgpass",
+    "credentials",
+    "credentials.json",
+    ".htpasswd",
+)
+
+# 明确放行：公开的配置模板，值全是空的，属于项目该给人看的一部分。
+# 先判这个再判通配——否则 `.env.*` 会把 `.env.example` 一起吃掉。
+SENSITIVE_EXCEPTIONS = frozenset({".env.example", ".env.sample", ".env.template"})
+
+
+def is_sensitive_file(name: str) -> bool:
+    """这个**文件名**要不要整条挡掉。
+
+    只看名字，不看路径、不看内容——大小写不敏感（Windows 上尤其要）。
+
+    末尾的点号和空格先削掉：Windows 的文件名本来就不允许以它们结尾，
+    `resolve()` 也会把它们规范掉，所以现在每条调用路径都碰不到。但这是
+    个隐性契约——将来谁拿一个没 resolve 过的 `entry.name` 来问，`.env `
+    这种名字就会与名单擦肩而过。判断本身不该依赖调用方先替它规范化。
+    """
+    lowered = name.lower().rstrip(" .")
+    if lowered in SENSITIVE_EXCEPTIONS:
+        return False
+    return any(
+        fnmatch.fnmatchcase(lowered, pattern) for pattern in SENSITIVE_FILES
+    )
 
 
 def check_root(root: Path | None) -> Path:

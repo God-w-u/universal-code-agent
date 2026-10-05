@@ -71,11 +71,11 @@
 import math
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 
 from index.chunks import CodeChunk
-from index.compact import TEXT_STRATEGY, compact_text
+from index.compact import compact_text
 from index.retrieval import DEFAULT_SCORERS, Match, Query, Scorer
 from index.segments import segment_chunk, strategy_id
 from index.vector_cache import (
@@ -313,7 +313,10 @@ class EmbeddingScorer:
             return []
         return [Match(self.kind, f"语义相近 {similarity:.2f}", similarity * self.weight)]
 
-    def prefetch(self, chunks=None) -> int:
+    def prefetch(
+        self,
+        chunks: Sequence[CodeChunk] | Callable[[], Sequence[CodeChunk]] | None = None,
+    ) -> int:
         """把还没算过的 chunk 向量一次批量算齐，返回这次新嵌了几段文本。
 
         `chunks` 不给就用构造时给的来源；两边都没有就什么都不做（老路是
@@ -368,21 +371,67 @@ class EmbeddingScorer:
                 }
             )
 
+        # 把这次算出来的按身份归拢好，再往各块上贴。以前是「每块扫一遍
+        # missing」，块数一多就是 块数 × 缺向量数 的平方增长——几千块的
+        # 语料要跑几十万次身份比较（比每块只在 missing 里找自己那几个要
+        # 多得多），而且全是在重复同一件事。归拢一次是 O(缺向量数)，贴回
+        # 去是 O(块数)。
+        fresh: dict[tuple[str, str], dict[int, Vector]] = {}
+        for (other, index, _), vector in zip(missing, embedded):
+            fresh.setdefault(self._identity(other), {})[index] = vector
+
         for chunk in pending:
             identity = self._identity(chunk)
             merged = dict(known.get(identity, {}))
-            for (other, index, _), vector in zip(missing, embedded):
-                if self._identity(other) == identity:
-                    merged[index] = vector
+            merged.update(fresh.get(identity, {}))
             self._chunks[identity] = tuple(
                 merged[index] for index in range(len(texts[identity]))
             )
+        # 内存里只留这批块：上一版留下的（改了 digest、删掉的）不再属于这份
+        # 语料，留着只是白占地方——而且「手上这批块」是这里唯一的事实
+        self._retain(items)
         # 顺手打扫：这份语料里已经查不到的旧向量（9.6）
         self._prune_stale_vectors(items)
         self.prefetch_seconds += time.perf_counter() - started
         return len(embedded)
 
-    def _prune_stale_vectors(self, items) -> None:
+    def forget(self, chunk_ids: Iterable[str]) -> int:
+        """这些 chunk id 已经不作数了：内存和磁盘上的向量立刻作废。
+
+        「文件删了 / 符号没了」这类变化，id 本身就没了——内存里按
+        `(id, digest)` 存着的旧向量再也不会被查到，磁盘上那些条目也不在
+        任何 `prune(scope=)` 的范围内（删掉的 id 不在「这份语料现在的块」里，
+        只会被当成别的语料的东西留着）。这里明确点名清理，返回清掉的
+        内存条目数；磁盘那头交给 `VectorCache.forget_ids()`，失败照老规矩
+        只降级不炸。
+
+        正常刷新（`prefetch()`）不需要它——那一步会把内存收敛到当前这批
+        块上。它管的是「这次刷新之后连 id 都消失」的那部分。
+        """
+        gone = set(chunk_ids)
+        if not gone:
+            return 0
+        removed = 0
+        for identity in list(self._chunks):
+            if identity[0] in gone:
+                del self._chunks[identity]
+                removed += 1
+        if self.cache is not None:
+            self.cache.forget_ids(gone)
+        return removed
+
+    def _retain(self, items: Sequence[CodeChunk]) -> None:
+        """内存里的块向量收敛到 items 这批上（换过版本的、删掉的都丢掉）。
+
+        只动内存，不碰磁盘：磁盘上的过时条目由 `_prune_stale_vectors`
+        按 scope 打扫，删除的 id 由 `forget()` 点名清。
+        """
+        live = {self._identity(chunk) for chunk in items}
+        for identity in list(self._chunks):
+            if identity not in live:
+                del self._chunks[identity]
+
+    def _prune_stale_vectors(self, items: Sequence[CodeChunk]) -> None:
         """把这份语料里已经查不到的旧向量从缓存清掉（9.6）。
 
         digest 一改，老向量就永远查不到；分段后 key 还带段号，段数一变
@@ -486,7 +535,7 @@ class EmbeddingScorer:
         if self.cache is not None:
             self.cache.put_many({key: vector}, flush=False)
 
-    def _embed_many(self, texts) -> tuple[Vector, ...]:
+    def _embed_many(self, texts: Sequence[str]) -> tuple[Vector, ...]:
         """一次 embed 一批，顺序一一对应；顺手挡住两种接错线：条数不对、
         长度不对。空批次直接回空——不为空批次惊动模型。"""
         batch = tuple(texts)
@@ -616,11 +665,19 @@ def cache_for(
     """按 9.3 的命名空间规矩给 embedder 配一个落盘缓存（9.4 / 9.5）。
 
     命名空间 = 模型身份（`namespace_of`：类名 + 模型名 / 词表指纹）+ 文本
-    管线版本：不分段是 `compact-v1`，分段是 `compact-v1+segment-v1`
-    （`segments.strategy_id`）——换模型、改 compact 拼法、改切法、换开关，
-    都落到另一个文件，旧向量自动作废。评估入口和 Agent 工具共用这一处
-    规则，`segmented` 要和给 `EmbeddingScorer` 的 `segment` 一致。
+    管线版本：不分段是 `compact-v1`，分段是 `compact-v1+segment-v1@w128`
+    （`segments.strategy_id`，尾巴是窗口）——换模型、改 compact 拼法、改
+    切法、换开关、**改窗口**，都落到另一个文件，旧向量自动作废。评估入口
+    和 Agent 工具共用这一处规则，`segmented` 要和给 `EmbeddingScorer` 的
+    `segment` 一致。
+
+    窗口必须进来：分段结果由它决定（见 segments.strategy_id 的说明），
+    而 `namespace_of` 只看类名和模型名——同一个模型换窗口，模型身份一点
+    没变。不关窗口的话，`#s0` 这些 key 会指着按老窗口切的向量。
     """
     cutting = segmentation_active(embedder, segmented)
-    namespace = f"{namespace_of(embedder)}#{strategy_id(cutting)}"
+    # 不分段时窗口不参与切分，也就不该参与身份：不然纯属给缓存换了个
+    # 文件名，白丢一次热缓存
+    window = getattr(embedder, "max_tokens", None) if cutting else None
+    namespace = f"{namespace_of(embedder)}#{strategy_id(cutting, window)}"
     return VectorCache(cache_file(directory, namespace), namespace)

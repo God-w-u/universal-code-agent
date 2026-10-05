@@ -43,6 +43,9 @@ def build_system_prompt(root: Path | None = None) -> str:
 ## 拿到一个问题先做什么
 - 不知道代码在哪：先用 list_files / search_code / search_code_chunks / code_summary 缩小范围，
   再 read_file 精读。一上来就读一堆文件，又慢又占上下文，还容易漏掉真正的入口。
+- 想知道「谁调用了这个函数 / 这个函数调用了谁」用 call_graph：它只给名字和位置
+  （路径:行号），要读代码再拿位置去 read_file。改一个函数之前先看它的调用者，
+  才知道还有谁会被牵连。
 - 一轮里能同时发的调用就一起发（比如同时读三个文件），比一轮发一个快得多。
 - 要用工具的时候先用专门的：确认改动没弄坏东西用 run_tests，编单个 C++ 文件用 compile，
   整个工程用 build。能用它们就别自己用 run_command 拼命令——专门工具的报错更干净，

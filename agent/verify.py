@@ -167,6 +167,16 @@ class Verifier:
         # 没验证过、或者最近一次没跑成时为 None——「最新的结论是没有结论」
         self.last: Verification | None = None
 
+    def reset(self) -> None:
+        """开始新的一轮任务：丢掉上一轮留下的诊断基线。
+
+        `_last` 是「改之前是什么样」，`last` 是「最近一次验证结论」——
+        两个都只在一次 run() 之内有意义。留着的话，新一轮第一次验证会
+        拿**上一个任务**的编译结果当「之前」，报出假的「已消失 / 新增」。
+        """
+        self._last = None
+        self.last = None
+
     def after_tool_call(
         self,
         tool: str,

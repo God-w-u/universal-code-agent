@@ -19,11 +19,15 @@ msbuild 是 VS 自带的，装了 VS 就有。
 import shutil
 from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from tools import diagnostics, vsenv
 from tools.base import Tool, ToolError
 from tools.paths import check_root, resolve_shell_path
 from tools.run_command import RunCommandTool
+
+if TYPE_CHECKING:  # 只为注解；省略 sandbox 时由 RunCommandTool 自己装配
+    from sandbox.base import Sandbox
 
 SYSTEMS = ("cmake", "make", "msbuild")
 
@@ -83,10 +87,16 @@ class BuildTool(Tool):
     }
 
     def __init__(
-        self, root: Path | None = None, timeout: float = DEFAULT_BUILD_TIMEOUT
+        self,
+        root: Path | None = None,
+        timeout: float = DEFAULT_BUILD_TIMEOUT,
+        sandbox: "Sandbox | None" = None,
     ) -> None:
         self.root = check_root(root)
-        self.command_tool = RunCommandTool(root=self.root, timeout=timeout)
+        # sandbox 转交给内层工具：省略时它按 root 自己装一个 LocalSandbox
+        self.command_tool = RunCommandTool(
+            root=self.root, timeout=timeout, sandbox=sandbox
+        )
 
     def build(
         self,

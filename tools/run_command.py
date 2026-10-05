@@ -7,18 +7,24 @@
 解码复用 tools/textfile.py（命令输出的编码和源码一样不保证）。
 
 真正的执行是模块级的：run_process（起进程、超时杀掉）、decode_output
-（解码回退）、render_result / render_timeout（结果文本的格式）。
-RunCommandTool 只是其中一个调用方；Phase 10 的 Sandbox
-（sandbox/local.py）复用同一套，不另写一份 subprocess 逻辑——
-超时语义和输出截断全项目以这几个函数为唯一标准。
+（解码回退）、render_result / render_timeout（结果文本的格式）——
+全项目就这一份，Sandbox（sandbox/local.py）也从这里 import。
+
+10.2 起工具不再自己起进程：RunCommandTool 按自己的 root 装配一个
+Sandbox（经 SandboxManager），命令校验、执行、超时、cwd、env 都交给
+它；这一层只把 CommandResult 翻回 (退出码, 文本) 这个对外的老接口。
 """
 
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from tools.base import Tool, ToolError
 from tools.paths import check_root
 from tools.textfile import decode_text
+
+if TYPE_CHECKING:  # 只为注解；运行时才 import Sandbox（见 RunCommandTool.__init__）
+    from sandbox.base import Sandbox
 
 # 不给 timeout 参数时默认等多少秒。
 # 多数命令几秒内就结束；真正慢的（完整构建、全量测试）由调用方指定更大的值。
@@ -148,7 +154,7 @@ def render_timeout(command: str, seconds: float) -> str:
 
 
 class RunCommandTool(Tool):
-    """在项目根目录下执行一条命令。"""
+    """在项目根目录下执行一条命令（实际执行交给 Sandbox）。"""
 
     name = "run_command"
     description = (
@@ -179,13 +185,27 @@ class RunCommandTool(Tool):
     max_output_chars = MAX_OUTPUT_CHARS
 
     def __init__(
-        self, root: Path | None = None, timeout: float = DEFAULT_TIMEOUT
+        self,
+        root: Path | None = None,
+        timeout: float = DEFAULT_TIMEOUT,
+        sandbox: "Sandbox | None" = None,
     ) -> None:
         if timeout <= 0:
             raise ValueError(f"timeout 必须大于 0，收到 {timeout}")
 
         self.root = check_root(root)
         self.timeout = timeout
+
+        if sandbox is None:
+            # 延迟到这里 import：sandbox 包在模块级就 import 本模块的
+            # run_process / render_*，本模块再在模块级 import 它，两个
+            # 方向都会绕成环（谁先被导入都炸）。构造对象时两边都加载完了。
+            from sandbox.manager import SandboxManager
+
+            # workspace 就是 root：工具守的边界和进程实际能跑的范围是同
+            # 一个。sandbox 参数是测试口子，也是以后换实现（Docker）的接缝。
+            sandbox = SandboxManager(self.root, timeout=timeout).sandbox
+        self.sandbox = sandbox
 
     def execute(
         self,
@@ -211,29 +231,20 @@ class RunCommandTool(Tool):
         vcvars64.bat 把环境铺好（见 tools/vsenv.py），再把那份环境传进来。
         传 None 就是继承当前进程的环境，也就是原来的行为。
         它只影响子进程收到哪些变量，不参与命令字符串的拼接。
+
+        执行本身走 self.sandbox（默认是 workspace=root 的 LocalSandbox）：
+        命令校验、cwd、超时、环境、输出解码和截断都在 Sandbox 层完成，
+        这里只是把 CommandResult 翻回 (退出码, 文本) 这个老接口。
         """
-        if not command.strip():
-            # 空命令几乎肯定是模型写错了，直接说清楚，别让它跑出一个
-            # 「退出码 0、什么也没输出」的空结果
-            raise ToolError("命令不能为空")
-
         seconds = self.timeout if timeout is None else timeout
-        if seconds <= 0:
-            raise ToolError(f"timeout 必须大于 0，收到 {seconds}")
+        # 命令非空、timeout 合法在 Sandbox 层校验（说法和以前一模一样），
+        # 工作目录也固定为 workspace（就是 root），相对路径不会溜到别处去。
+        result = self.sandbox.run(command, timeout=seconds, env=env)
+        if result.timed_out or result.exit_code is None:
+            return None, self._timeout_result(result.command, result.timeout)
 
-        # 真正跑进程的是模块级的 run_process（那几个 Windows 坑的注释
-        # 就在它头上）。工作目录固定在 root，相对路径不会溜到别处去。
-        code, stdout, stderr = run_process(
-            command, cwd=self.root, timeout=seconds, env=env
-        )
-        if code is None:
-            return None, self._timeout_result(command, seconds)
-
-        return code, self._render(
-            command,
-            code,
-            decode_output(stdout, "标准输出"),
-            decode_output(stderr, "标准错误"),
+        return result.exit_code, self._render(
+            result.command, result.exit_code, result.stdout, result.stderr
         )
 
     def _render(self, command: str, code: int, stdout: str, stderr: str) -> str:

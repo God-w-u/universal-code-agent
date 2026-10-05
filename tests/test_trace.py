@@ -9,6 +9,7 @@ import time
 import unittest
 
 from agent import Agent, AgentError, Trace, TraceEvent
+from llm import LLMCallStats, LLMUsage
 from tools import Tool, ToolError, ToolExecutor, ToolRegistry
 
 
@@ -339,6 +340,177 @@ class ExecutorTraceTest(unittest.TestCase):
         executor.execute("echo", text="hi")
 
         self.assertEqual(len(executor.trace), 1)
+
+
+class TraceObserverTest(unittest.TestCase):
+    """13.2 的观察者：开始 / 结束各通知一次，都不影响执行和记录。"""
+
+    def make(self, tools=(EchoTool(),), **observers):
+        trace = Trace(**observers)
+        return trace, ToolExecutor(ToolRegistry(list(tools)), trace=trace)
+
+    def test_start_comes_before_end(self):
+        order = []
+        _, executor = self.make(
+            on_tool_start=lambda tool, arguments: order.append(
+                ("start", tool, arguments)
+            ),
+            on_tool_end=lambda event: order.append(("end", event.tool)),
+        )
+
+        executor.execute("echo", text="hi")
+
+        self.assertEqual(order, [("start", "echo", {"text": "hi"}), ("end", "echo")])
+
+    def test_the_start_notice_is_not_an_event(self):
+        trace, executor = self.make(on_tool_start=lambda tool, arguments: None)
+
+        executor.execute("echo", text="hi")
+
+        # 开始通知不往 events 里塞半成品：那里只有「跑完了」的记录
+        self.assertEqual(len(trace), 1)
+        self.assertEqual(trace.events[0].tool, "echo")
+
+    def test_a_failed_tool_notifies_both_ends_too(self):
+        order = []
+        _, executor = self.make(
+            tools=(AngryTool(),),
+            on_tool_start=lambda tool, arguments: order.append("start"),
+            on_tool_end=lambda event: order.append((event.success, event.error)),
+        )
+
+        executor.execute("angry")
+
+        self.assertEqual(order, ["start", (False, "我不干")])
+
+    def test_an_exploding_observer_does_not_break_the_call(self):
+        def boom(*args):
+            raise RuntimeError("观察者炸了")
+
+        trace, executor = self.make(on_tool_start=boom, on_tool_end=boom)
+
+        result = executor.execute("echo", text="hi")
+
+        # 工具照跑、记录照记：观察者是外人，它的错不归执行层管
+        self.assertTrue(result.success)
+        self.assertEqual(len(trace), 1)
+
+    def test_no_observer_means_no_notification_but_the_same_records(self):
+        trace, executor = self.make()
+
+        executor.execute("echo", text="hi")
+
+        self.assertEqual(len(trace), 1)
+        self.assertEqual(trace.events[0].arguments, {"text": "hi"})
+
+    def test_observers_do_not_leak_into_the_next_run(self):
+        seen = []
+        agent = Agent(
+            client=FakeLLMClient(
+                [
+                    tool_call_reply("echo", '{"text": "hi"}'),
+                    final_reply("第一次"),
+                    final_reply("第二次"),
+                ]
+            ),
+            tools=ToolRegistry([EchoTool()]),
+        )
+
+        agent.run("任务甲", on_tool_start=lambda tool, arguments: seen.append(tool))
+        agent.run("任务乙")
+
+        # 第二轮没带观察者：上一轮的回调不该留在执行层继续发通知
+        self.assertEqual(seen, ["echo"])
+        self.assertEqual(len(agent.get_trace()), 0)
+
+
+class LlmObserverTest(unittest.TestCase):
+    """13.5 的观察者：模型调用的开始 / 结束各通知一次，都不进 events。
+
+    这一层只认 LLMCallStats 的形状，统计对象直接手搓——真客户端怎么攒出
+    它来在 test_llm_retry.py，这里钉的是 Trace 这一侧的收发。
+    """
+
+    def make_stats(self, **overrides):
+        fields = {
+            "model": "假模型",
+            "success": True,
+            "duration_seconds": 0.25,
+            "total_duration_seconds": 0.25,
+            "attempt_count": 1,
+            "max_attempts": 3,
+            "usage": LLMUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+            "error": "",
+        }
+        fields.update(overrides)
+        return LLMCallStats(**fields)
+
+    def test_start_comes_before_end(self):
+        order = []
+        trace = Trace(
+            on_llm_start=lambda model, attempt, max_attempts: order.append(
+                ("start", model, attempt, max_attempts)
+            ),
+            on_llm_end=lambda stats: order.append(("end", stats.attempt_count)),
+        )
+
+        trace.start_llm_call("假模型", 1, 3)
+        trace.record_llm_call(self.make_stats())
+
+        self.assertEqual(order, [("start", "假模型", 1, 3), ("end", 1)])
+
+    def test_the_llm_notices_are_not_events(self):
+        trace = Trace(on_llm_start=lambda *args: None)
+
+        trace.start_llm_call("假模型", 1, 3)
+        trace.record_llm_call(self.make_stats())
+
+        # events 里始终只有「跑完的工具调用」：模型调用一条也不往里塞
+        self.assertEqual(trace.events, [])
+        self.assertEqual(len(trace), 0)
+        self.assertEqual(trace.to_dicts(), [])
+
+    def test_the_stats_are_kept_in_llm_calls(self):
+        stats = self.make_stats()
+        trace = Trace()
+
+        trace.record_llm_call(stats)
+
+        self.assertEqual(trace.llm_calls, [stats])
+        # 没有观察者也有留档：回调只是「顺便通知一下」
+        self.assertEqual(trace.llm_calls[0].usage.total_tokens, 15)
+
+    def test_every_hop_of_a_retry_is_kept(self):
+        first = self.make_stats(success=False, attempt_count=1, usage=None, error="限流了")
+        second = self.make_stats(attempt_count=2)
+        trace = Trace()
+
+        trace.record_llm_call(first)
+        trace.record_llm_call(second)
+
+        self.assertEqual([stats.attempt_count for stats in trace.llm_calls], [1, 2])
+        self.assertFalse(trace.llm_calls[0].success)
+        self.assertTrue(trace.llm_calls[1].success)
+
+    def test_an_exploding_llm_observer_does_not_break_the_records(self):
+        def boom(*args):
+            raise RuntimeError("观察者炸了")
+
+        trace = Trace(on_llm_start=boom, on_llm_end=boom)
+
+        trace.start_llm_call("假模型", 1, 3)
+        trace.record_llm_call(self.make_stats())
+
+        self.assertEqual(len(trace.llm_calls), 1)  # 记录照收
+
+    def test_no_llm_observer_means_no_notification_but_the_records_stay(self):
+        trace = Trace()
+
+        trace.start_llm_call("假模型", 1, 3)
+        trace.record_llm_call(self.make_stats())
+
+        self.assertEqual(len(trace.llm_calls), 1)
+        self.assertEqual(trace.events, [])
 
 
 class AgentTraceTest(unittest.TestCase):

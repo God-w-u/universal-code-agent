@@ -14,6 +14,10 @@
 - **其余部分一个字节都不动**。编码照原样（读的时候试出来是哪种，写回去就用哪种），
   换行照原样（`\\r\\n` 的文件改完还是 `\\r\\n`），不重新排版，结尾有没有换行也不动。
 
+还有一条不是「改哪儿」而是「能不能碰」：**敏感文件（.env、密钥、证书）一个都不改**。
+返回值里带着「修改前 / 修改后」那几行，改一次就等于把密钥念一遍；写更不用说，
+凭据被改坏是收不回来的。挡它的是和 read_file 同一处判定（tools/paths.py）。
+
 写入走「临时文件 + 原子替换」：要么是改前的，要么是改后的，不会留下半个文件。
 """
 
@@ -24,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from tools.base import Tool, ToolError
-from tools.paths import check_root, resolve_in_root
+from tools.paths import check_root, is_sensitive_file, resolve_in_root
 from tools.textfile import decode_with_encoding, read_bytes, split_lines
 
 # 按原文替换 / 按行号替换。两种只能选一种。
@@ -167,6 +171,8 @@ class EditFileTool(Tool):
         raw, encoding = self._read(target, path)
 
         if by_text:
+            # by_text 就是按 old_text 算出来的，走到这支它一定有值
+            assert old_text is not None
             change = self._by_text(raw, old_text, new_text, path)
         else:
             change = self._by_line(
@@ -186,8 +192,19 @@ class EditFileTool(Tool):
         和别的工具走同一道门（resolve_in_root）：`..`、绝对路径、符号链接
         都会在 resolve() 之后被挡住。这个工具是往里写东西的，逃出去一次
         就不是「看到了不该看的」，而是「改了不该改的」。
+
+        敏感文件（.env、密钥、证书……）和 read_file 一样整条挡掉，而且这儿
+        还多一层：结果里会带「修改前 / 修改后」那几行——真让它改一次，密钥
+        原文就顺着返回值进了模型上下文，比 read_file 还容易（拿已知前缀当
+        锚点就行）。写更不用说：凭据被改坏是收不回来的。名单和理由见
+        tools/paths.py，`.env.example` 这类公开模板照常放行。
         """
         target = resolve_in_root(path, self.root)
+        if is_sensitive_file(target.name):
+            raise ToolError(
+                f"{target.name!r} 是敏感文件（密钥 / 凭据一类），不能改，"
+                f"内容也不会发给模型。要改配置模板，改 .env.example。"
+            )
         if target.is_dir():
             raise ToolError(f"{path!r} 是目录，不能当文件改")
         if not target.is_file():

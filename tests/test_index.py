@@ -286,6 +286,15 @@ class IgnoredDirectoryTest(IndexTestBase):
             ["build_tools/make.py", "my_venv_notes/note.py"],
         )
 
+    def test_the_repair_history_is_not_indexed(self):
+        # repair_history/ 里是「发生过什么」（任务原文、编译诊断、本地路径），
+        # 不是项目源码。被索引 / 检索收进去 = 把上几轮的任务原文当成这一轮的
+        # 代码喂给模型
+        self.make("main.py")
+        self.make("repair_history/2026-01-01-abcd.json", "任务甲")
+
+        self.assertEqual([entry.path for entry in self.scan().entries], ["main.py"])
+
     def test_the_index_sees_exactly_what_list_files_sees(self):
         # 两边共用 tools/tree.py 的遍历规则——这里直接对起来看
         self.make("main.py")
@@ -297,6 +306,30 @@ class IgnoredDirectoryTest(IndexTestBase):
         from_index = {entry.path for entry in self.scan().entries}
 
         self.assertEqual(from_index, from_list_files)
+
+
+class SensitiveFileTest(IndexTestBase):
+    """密钥 / 凭据文件不进索引（13 阶段回归）。
+
+    索引 = 会被切块、被 RAG 检索到的东西。密钥文件收进来，一段查询就可能
+    把密钥原文当成「命中的代码块」送回模型上下文。挡它的和 list_files /
+    search_code 是同一处：遍历里的 tools/paths.py is_sensitive_file。
+    """
+
+    def test_a_secret_file_is_not_indexed(self):
+        self.make("main.py")
+        for name in (".env", ".env.local", "deploy/server.pem", "deploy/id_rsa"):
+            self.make(name)
+
+        self.assertEqual([entry.path for entry in self.scan().entries], ["main.py"])
+
+    def test_the_public_template_is_still_indexed(self):
+        # .env.example 是给人抄的模板，值是空的——挡它没有意义
+        self.make(".env.example")
+
+        self.assertEqual(
+            [entry.path for entry in self.scan().entries], [".env.example"]
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -123,6 +123,21 @@ class RecordingEmbedder:
         return self.inner.embed(batch)
 
 
+class CountingEmbeddingScorer(EmbeddingScorer):
+    """数一数 `_identity` 被认了多少次（合并那一步的开销，见 BatchEmbedTest）。
+
+    只加计数，别的什么都不改：认身份的次数就是合并那一步的工作量。
+    """
+
+    def __init__(self, embedder, *, chunks=None) -> None:
+        super().__init__(embedder, chunks=chunks)
+        self.identity_calls = 0
+
+    def _identity(self, chunk: CodeChunk) -> tuple[str, str]:
+        self.identity_calls += 1
+        return super()._identity(chunk)
+
+
 class FakeModel:
     """装成 sentence-transformers 模型的样子：encode + 维度，够 LocalEmbedder 用。"""
 
@@ -304,6 +319,39 @@ class BatchEmbedTest(WarehouseTest):
             self.assertIn(f"pkg/store.py:{chunk.symbol}", text)
         self.assertEqual(list(recorder.batches[0]), expected)
 
+    def identity_calls(self, functions: int) -> int:
+        """建一个 `functions` 块的临时语料，跑一次冷 prefetch，数 `_identity`。
+
+        冷跑（不给 cache）→ 每一段都缺向量，正是合并那一步最吃力的形状。
+        """
+        self.write(
+            '"""小库。"""\n\n\n'
+            + "\n\n".join(
+                f'def worker_{n}():\n    """第 {n} 号。"""\n    return {n}\n'
+                for n in range(functions)
+            )
+        )
+        index = self.index()
+        self.assertEqual(len(index.chunks()), functions)
+
+        scorer = CountingEmbeddingScorer(FakeEmbedder(ROW_ALIASES), chunks=index.chunks)
+        scorer.prefetch()
+        return scorer.identity_calls
+
+    def test_the_merge_does_not_scan_every_vector_for_every_chunk(self):
+        """合并那一步的开销按块数线性走，别按「块数 × 缺向量数」。
+
+        9.3 的收尾是「每块扫一遍今天算出来的所有向量，比身份」：两千多块的
+        语料 = 上百万次比较，而且每次都在比同样那几对。这里量的是
+        `_identity` 被调了几次——真按平方走，块数翻 4 倍它要翻 16 倍。
+        """
+        small = self.identity_calls(10)
+        large = self.identity_calls(40)
+
+        self.assertGreater(small, 0)
+        # 线性的话最多翻 4 倍出头；平方那版是 16 倍，稳稳超出
+        self.assertLess(large, small * 8)
+
     def test_a_search_does_not_embed_chunks_one_by_one(self):
         index = self.index()
         recorder = RecordingEmbedder(FakeEmbedder(ROW_ALIASES))
@@ -388,7 +436,26 @@ class VectorCacheUnitTest(unittest.TestCase):
         self.assertIn("d1", key)
 
     def test_the_query_key_is_prefixed(self):
-        self.assertEqual(query_key("记录"), "query:记录")
+        # 前缀是给 prune 认「查询向量，永远不动」用的（见 CachePruneTest）
+        self.assertTrue(query_key("记录").startswith("query:"))
+
+    def test_the_query_key_does_not_carry_the_text(self):
+        # 缓存文件是明文 JSON，落在用户目录里长期留着。查询文本 = 用户问过
+        # 什么（任务描述、路径、粘进来的代码片段），拿它当 key 等于把这些
+        # 顺带抄了一份存进去
+        text = "把 verify_row 里的校验逻辑改成先查缓存"
+
+        key = query_key(text)
+
+        self.assertNotIn(text, key)
+        self.assertNotIn("verify_row", key)  # 关键词也不在
+        self.assertNotIn("校验", key)  # 汉字同样不进 key（剩下的是十六进制）
+
+    def test_the_same_text_always_gets_the_same_key(self):
+        self.assertEqual(query_key("记录"), query_key("记录"))
+
+    def test_different_texts_get_different_keys(self):
+        self.assertNotEqual(query_key("怎么保存"), query_key("怎么读取"))
 
     def test_a_missing_file_loads_as_empty(self):
         cache = self.cache()

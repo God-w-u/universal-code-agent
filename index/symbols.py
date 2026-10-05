@@ -221,6 +221,10 @@ class SymbolIndex:
     先扫一遍、每次都是全量刷新；`project=` 传来的归调用方管，刷新由调用方决定
     ——它也得能拿一份「建好之后文件又改过」的旧清单来验证 digest 保护。
     build() 之前先看 built。
+
+    **要立刻拿到最新的符号**（文件增删改之后）就调 `refresh()`：它连调用方
+    管的清单也一起重扫（`build(force=True)`），一路级联到项目清单。默认的
+    `build()` 一个字不改——digest 保护靠的正是「调用方没点头就不动它的清单」。
     """
 
     def __init__(
@@ -235,14 +239,20 @@ class SymbolIndex:
         self._symbols: list[Symbol] = []
         self._skipped: list[Skipped] = []
         self._built = False
+        self._generation = 0
 
-    def build(self) -> None:
-        """全量重建：把已索引的文件逐个读回来提取符号。再调一次就是刷新。"""
-        if self._own_project or not self.project.built:
+    def build(self, *, force: bool = False) -> None:
+        """全量重建：把已索引的文件逐个读回来提取符号。再调一次就是刷新。
+
+        `force=True`：连外面传进来的文件清单也重扫（`refresh()` 走这条）。
+        默认 False 时调用方管的清单一次都不碰——digest 保护就靠这条。
+        """
+        if force or self._own_project or not self.project.built:
             # 自己管的清单（root= 或者默认）：每次刷新。
             # 外面传进来但从没扫过的：替它扫一次——不扫就是个空清单，
             # 会静默地一个符号都拿不到。扫过的（哪怕已经过时）一律不碰：
             # 那是调用方的东西，也正是 digest 保护能生效的场景。
+            # force=True 是调用方自己点头：这次的清单也得是最新的。
             self.project.build()
 
         symbols: list[Symbol] = []
@@ -257,6 +267,11 @@ class SymbolIndex:
             if reason is not None:
                 skipped.append(Skipped(entry.path, reason))
                 continue
+            # read_verified 的约定（见它的文档）：reason 为 None 时 text 一定有。
+            # digest 同理——它是拿 entry.digest 核对过内容才算通过的，能走到
+            # 这儿说明这条记录就是 INDEXED，digest 一定有值。
+            assert text is not None
+            assert entry.digest is not None
 
             try:
                 parts = extractor(text)
@@ -282,6 +297,20 @@ class SymbolIndex:
         self._symbols = symbols
         self._skipped = skipped
         self._built = True
+        self._generation += 1
+
+    def refresh(self) -> None:
+        """显式刷新：连文件清单一起重扫，拿到当前的最新符号。
+
+        文件增、删、改之后调它。调用图那一层盯着 `generation`：这份一刷新，
+        建在它上面的调用图就自动作废、下次查询重建。
+        """
+        self.build(force=True)
+
+    @property
+    def generation(self) -> int:
+        """这份符号索引换过几版：每扫成一次 +1，0 表示一版都没有。"""
+        return self._generation
 
     @property
     def built(self) -> bool:

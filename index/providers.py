@@ -24,6 +24,7 @@ Retriever / Evaluation 不认识名字，也不认识模型：
 """
 
 from collections.abc import Callable, Sequence
+from typing import Any
 
 from index.embedding import DEMO_ALIASES, Embedder, FakeEmbedder
 from index.local_embedding import (
@@ -40,7 +41,7 @@ def _fake(aliases: Sequence[Sequence[str]] = DEMO_ALIASES) -> Embedder:
     return FakeEmbedder(aliases)
 
 
-def _local(**kwargs) -> Embedder:
+def _local(**kwargs: Any) -> Embedder:
     """参数原样转给 LocalEmbedder（model_name / model_loader / batch_size）。
 
     顺手声明窗口（9.5）：分段要知道模型的 max_seq_length，而它得是个
@@ -51,7 +52,7 @@ def _local(**kwargs) -> Embedder:
     return LocalEmbedder(**kwargs)
 
 
-def _multilingual(**kwargs) -> Embedder:
+def _multilingual(**kwargs: Any) -> Embedder:
     """多语言模型（9.2）：默认 paraphrase-multilingual-MiniLM-L12-v2。
 
     和 `_local` 是同一种东西，只是默认模型不同——传了 model_name 就用
@@ -70,7 +71,7 @@ PROVIDERS: dict[str, Callable[..., Embedder]] = {
 }
 
 
-def create_embedder(provider: str = "fake", **kwargs) -> Embedder:
+def create_embedder(provider: str = "fake", **kwargs: Any) -> Embedder:
     """按名字造一个 Embedder，多余的关键字参数原样转给那个 provider。
 
     名字不认识就报错并列出可选项——拼错了却悄悄给个默认的，是最难查的

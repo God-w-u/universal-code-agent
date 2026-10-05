@@ -1,0 +1,21 @@
+# 开发 / CI / 跑测试用的依赖；运行时依赖见 requirements.txt。
+#
+# 装法（在 .venv 里）：
+#     pip install -r requirements-dev.txt
+#
+# 三项，都不参与运行时逻辑：
+#   httpx —— tests/test_llm_retry.py 用 httpx.Request / httpx.Response 构造
+#   OpenAI SDK 那几族异常对象（APITimeoutError 之类要一个 response 才造得出来），
+#   tests/test_api_llm.py 又从它那里 import，所以少了它这两个模块整体加载不了。
+#   它是 openai 的间接依赖，但新版 openai（3.24 起）拉的是 httpx2，不再带 httpx，
+#   不能指望「装了 openai 就有 httpx」，必须在这里显式声明。
+#   ruff / mypy —— 静态检查（13.8）：代码风格与未用导入查 ruff，类型查 mypy。
+#   配置在项目根的 pyproject.toml 里，跑法：
+#       .venv/Scripts/python.exe -m ruff check .
+#       .venv/Scripts/python.exe -m mypy
+#   它们只被开发者和 CI 用到，运行时一行都不 import，所以不进 requirements.txt。
+#   实测版本：ruff 0.16.10 / mypy 2.4.0。
+-r requirements.txt
+httpx
+ruff>=0.6.0
+mypy>=1.11.0

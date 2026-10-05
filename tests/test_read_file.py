@@ -383,6 +383,41 @@ class ReadFileToolSymlinkTest(ReadFileToolTestBase):
         self.assertEqual(self.read(path="alias.txt"), "1|内容")
 
 
+class ReadFileToolSensitiveTest(ReadFileToolTestBase):
+    """密钥 / 凭据文件连「点名读」都不行（13 阶段回归）。
+
+    遍历挡住的是「顺手带出来」；这里挡的是模型直接 `read_file(".env")`——
+    那句话一执行，密钥原文就进了模型上下文。
+    """
+
+    def test_reading_a_secret_file_is_rejected(self):
+        for name in (".env", ".env.local", "server.pem", "id_rsa", "deploy.key"):
+            with self.subTest(name=name):
+                self.make(name, "OPENAI_API_KEY=sk-真钥匙不该出现在这里")
+
+                with self.assertRaises(ToolError):
+                    self.read(path=name)
+
+    def test_the_error_does_not_echo_the_content(self):
+        self.make(".env", "OPENAI_API_KEY=sk-真钥匙不该出现在这里")
+
+        with self.assertRaises(ToolError) as caught:
+            self.read(path=".env")
+
+        self.assertNotIn("sk-", str(caught.exception))
+        self.assertIn(".env.example", str(caught.exception))  # 告诉它该看哪儿
+
+    def test_the_public_template_can_still_be_read(self):
+        self.make(".env.example", "OPENAI_API_KEY=\n")
+
+        self.assertEqual(self.read(path=".env.example"), "1|OPENAI_API_KEY=")
+
+    def test_a_normal_file_is_unaffected(self):
+        self.make("environment.py", "KEY = '从环境变量读'\n")
+
+        self.assertEqual(self.read(path="environment.py"), "1|KEY = '从环境变量读'")
+
+
 class ReadFileToolRealProjectTest(unittest.TestCase):
     """直接读本项目，确认默认 root 和真实文件都对得上。"""
 

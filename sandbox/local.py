@@ -5,17 +5,16 @@ run_process（起进程 + 超时杀掉，那两个 Windows 的坑连同注释都
 decode_output（解码回退）、render_*（文本格式，as_text 用）。Sandbox
 要保证的语义就是那边已经测过的语义，不另起一套。
 
-这个文件真正自己做的是**边界**：cwd 可以是 workspace 里的任意一层
-子目录，但 resolve() 之后必须仍落在 workspace 以内——`..`、绝对路径、
-符号链接三种逃逸都靠「先展开再判断」一起堵住（复用 tools/paths.py 的
-resolve_in_root，和只读工具是同一套规则）。
+校验和边界也一行没自己写：命令非空、timeout 合法、cwd 必须落在
+workspace 以内（`..`、绝对路径、符号链接一起堵）都在 sandbox/base.py，
+local 和 docker 两种实现共用同一份——边界归 Sandbox 层，不是各实现
+自己约定。
 """
 
 from pathlib import Path
 
-from sandbox.base import CommandResult, Sandbox
-from tools.base import ToolError
-from tools.paths import check_root, resolve_in_root
+from sandbox.base import CommandResult, Sandbox, check_run_args, resolve_cwd
+from tools.paths import check_root
 from tools.run_command import DEFAULT_TIMEOUT, decode_output, run_process
 
 
@@ -56,20 +55,11 @@ class LocalSandbox(Sandbox):
         都抛 ToolError——接入时调用方就是从那些工具换过来的，报错措辞
         对得上，模型的认知不用改。
         """
-        if not isinstance(command, str) or not command.strip():
-            # 空命令跑出来只会是「退出码 0、什么也没输出」，直接说清楚
-            raise ToolError("命令不能为空")
-
-        seconds = self.timeout if timeout is None else timeout
-        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
-            raise ToolError(f"timeout 必须是数字，收到 {seconds!r}")
-        if seconds <= 0:
-            raise ToolError(f"timeout 必须大于 0，收到 {seconds}")
-
-        target = self._checked_cwd(cwd)
+        seconds = check_run_args(command, timeout, self.timeout)
+        target = resolve_cwd(cwd, self._workspace)
 
         code, out_raw, err_raw = run_process(
-            command, cwd=target, timeout=float(seconds), env=env
+            command, cwd=target, timeout=seconds, env=env
         )
         timed_out = code is None
         return CommandResult(
@@ -78,25 +68,6 @@ class LocalSandbox(Sandbox):
             exit_code=code,
             stdout="" if timed_out else decode_output(out_raw, "标准输出"),
             stderr="" if timed_out else decode_output(err_raw, "标准错误"),
-            timeout=float(seconds),
+            timeout=seconds,
             timed_out=timed_out,
         )
-
-    def _checked_cwd(self, cwd: str | Path | None) -> Path:
-        """把 cwd 解析成绝对路径，并确认没有跑出 workspace。
-
-        省略 = workspace 根目录；相对路径从 workspace 算起；绝对路径
-        也接受，但一样要落在 workspace 以内。resolve() 会展开 `..` 和
-        符号链接，判断放在它之后，逃逸就堵死了——顺序反了就等于没查。
-        """
-        if cwd is None:
-            return self._workspace
-
-        try:
-            resolved = resolve_in_root(str(cwd), self._workspace)
-        except ToolError as exc:
-            raise ToolError(f"cwd 超出 workspace 范围：{exc}") from None
-
-        if not resolved.is_dir():
-            raise ToolError(f"cwd 不存在或不是目录：{cwd!r}")
-        return resolved

@@ -33,7 +33,6 @@ from index import (
     Evaluator,
     FakeEmbedder,
     Retriever,
-    cache_for,
     load_cases,
     namespace_of,
 )

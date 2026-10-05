@@ -465,7 +465,8 @@ class SandboxManagerTest(SandboxTestBase):
 
         self.assertEqual(manager.kind, DEFAULT_KIND)
         self.assertEqual(DEFAULT_KIND, "local")
-        self.assertEqual(KINDS, ("local",))
+        # 10.3 起 docker 也是可选项（默认没变，还是 local）
+        self.assertEqual(KINDS, ("local", "docker"))
 
     def test_it_builds_a_local_sandbox(self):
         manager = SandboxManager(self.root)
@@ -494,11 +495,13 @@ class SandboxManagerTest(SandboxTestBase):
 
     def test_an_unknown_kind_is_refused_with_the_options(self):
         with self.assertRaises(ToolError) as caught:
-            SandboxManager(self.root, kind="docker")
+            SandboxManager(self.root, kind="remote")
 
         message = str(caught.exception)
-        self.assertIn("docker", message)
+        self.assertIn("remote", message)
         self.assertIn("local", message)
+        # 可选项列表里现在还有 docker（10.3 加的）
+        self.assertIn("docker", message)
 
     def test_a_bad_workspace_is_reported_at_the_first_run(self):
         # 懒建：配置不对推迟到真要用的时候才炸，构造时不联网、不碰磁盘

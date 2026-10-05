@@ -58,6 +58,45 @@ class SearchCodeToolTestBase(unittest.TestCase):
         return parse(self.search(**kwargs))
 
 
+class SearchCodeToolSensitiveTest(SearchCodeToolTestBase):
+    """搜密钥文件：命中了也不许返回（13 阶段回归）。
+
+    一句 `search_code "OPENAI_API_KEY"` 就能把密钥原文送进模型上下文，
+    送出去就收不回来了——所以这些文件根本不进遍历（tools/tree.py）。
+    """
+
+    SECRET = "sk-真钥匙不该出现在这里"
+
+    def test_a_secret_file_is_never_searched(self):
+        self.make("main.py", "KEY = '占位'\n")
+        self.make(".env", f"OPENAI_API_KEY={self.SECRET}\n")
+
+        result = self.search(keyword="OPENAI_API_KEY")
+
+        self.assertEqual(parse(result), [])
+        self.assertNotIn(self.SECRET, result)
+        self.assertNotIn("OPENAI_API_KEY=", result)
+
+    def test_searching_for_the_value_itself_finds_nothing(self):
+        self.make(".env.local", f"TOKEN={self.SECRET}\n")
+        self.make("deploy/id_rsa", f"-----BEGIN {self.SECRET}-----\n")
+
+        result = self.search(keyword=self.SECRET)
+
+        # 「没找到」那句会把关键词原样带回显（那是**提问**，不是文件内容），
+        # 所以只钉「没有一行来自密钥文件」
+        self.assertEqual(parse(result), [])
+        self.assertNotIn(f"TOKEN={self.SECRET}", result)
+        self.assertNotIn("deploy/id_rsa", result)
+
+    def test_the_public_template_is_still_searched(self):
+        self.make(".env.example", "OPENAI_API_KEY=\n")
+
+        self.assertEqual(
+            self.rows(keyword="OPENAI_API_KEY"), [(".env.example", 1, "OPENAI_API_KEY=")]
+        )
+
+
 class SearchCodeToolBasicTest(SearchCodeToolTestBase):
     def test_reports_path_line_number_and_content(self):
         self.make("tools/calculator.py", '"""doc"""\n\ndef f():\n    return result\n')

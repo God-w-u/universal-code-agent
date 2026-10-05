@@ -570,6 +570,62 @@ class GuardTest(EditFileTestBase):
         self.assertEqual(self.text_of("src/deep/a.py"), "x = 2\n")
 
 
+class EditFileToolSensitiveTest(EditFileTestBase):
+    """密钥 / 凭据文件连「点名改」都不行（13 阶段回归）。
+
+    read_file 早就挡了同一批文件；这个工具还更危险一层：返回值里带着
+    「修改前 / 修改后」那几行。真让它改一次 `.env`，密钥原文就顺着工具
+    结果进了模型上下文——拿一个已知前缀当锚点就能骗出后半段。写更不用说，
+    凭据改坏了没有备份可回。
+    """
+
+    SECRET = "sk-真钥匙不该出现在这里"
+
+    def test_editing_a_secret_file_is_refused(self):
+        for name in (".env", ".env.local", "server.pem", "id_rsa", "deploy.key"):
+            with self.subTest(name=name):
+                self.write(name, f"OPENAI_API_KEY={self.SECRET}\n")
+
+                message = self.refuse(path=name, old_text="sk-", new_text="x")
+
+                self.assertIn("敏感文件", message)
+
+    def test_the_file_is_not_touched(self):
+        # 挡在「读进来」之前：一个字节都不能变（连临时文件都不留）
+        self.write(".env", f"OPENAI_API_KEY={self.SECRET}\n")
+
+        self.refuse(path=".env", old_text=self.SECRET, new_text="换了")
+
+        self.assertEqual(self.text_of(".env"), f"OPENAI_API_KEY={self.SECRET}\n")
+        self.assertEqual(self.names(), [".env"])
+
+    def test_the_error_does_not_echo_the_content(self):
+        self.write(".env", f"OPENAI_API_KEY={self.SECRET}\n")
+
+        message = self.refuse(path=".env", old_text=self.SECRET, new_text="换了")
+
+        self.assertNotIn("sk-", message)
+        self.assertIn(".env.example", message)  # 告诉它该改哪儿
+
+    def test_the_public_template_can_still_be_edited(self):
+        self.write(".env.example", "OPENAI_API_KEY=\n")
+
+        self.edit(path=".env.example", old_text="OPENAI_API_KEY=", new_text="OPENAI_API_KEY=key")
+
+        self.assertEqual(self.text_of(".env.example"), "OPENAI_API_KEY=key\n")
+
+    def test_a_normal_file_is_unaffected(self):
+        # 名字里带 env / key 但不是名单上的那种，照改不误
+        self.write("env_loader.py", "KEY = '从环境变量读'\n")
+        self.write("keyboard.py", "KEYS = 88\n")
+
+        self.edit(path="env_loader.py", old_text="'从环境变量读'", new_text="'环境'")
+
+        self.assertEqual(self.text_of("env_loader.py"), "KEY = '环境'\n")
+        self.edit(path="keyboard.py", old_text="88", new_text="89")
+        self.assertEqual(self.text_of("keyboard.py"), "KEYS = 89\n")
+
+
 class ResultTest(EditFileTestBase):
     """返回的那段文字，字段得齐、得能直接看懂。"""
 
@@ -797,10 +853,11 @@ class EditFileAgentTest(EditFileTestBase):
         self.assertEqual(self.text_of("a.py"), "def add(a, b):\n    pass\n")
 
     def test_it_is_registered_in_main(self):
-        # main.build_agent() 会去读 API Key，这里把客户端换掉再装配
+        # main.build_agent() 默认会去读 LLM 配置（API Key / 模型名）；把
+        # 客户端整个换成替身，装配不需要任何真实配置，也不会联网
         import main
 
-        with patch("agent.agent.LLMClient", StubClient):
+        with patch("main.LLMClient", StubClient):
             agent = main.build_agent()
 
         self.assertIn("edit_file", [tool.name for tool in agent.tools.list()])

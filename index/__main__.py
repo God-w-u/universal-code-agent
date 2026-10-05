@@ -58,6 +58,7 @@ from index import (
     Evaluator,
     FakeEmbedder,
     Retriever,
+    Scorer,
     cache_for,
     combined_stats_line,
     compact_text,
@@ -115,7 +116,7 @@ def _hybrid_scorers(
     embedder: Embedder,
     cache_dir: Path | None,
     segment: bool,
-):
+) -> tuple[Scorer, ...]:
     """一个 hybrid 组的 scorers：总是批量预热（chunks=），给目录就再挂缓存。"""
     if cache_dir is None:
         return hybrid_scorers(embedder, chunks=index.chunks, segment=segment)

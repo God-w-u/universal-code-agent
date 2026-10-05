@@ -3,6 +3,8 @@
 全部在临时目录里跑，不联网、不碰真实项目文件。
 """
 
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -251,6 +253,73 @@ class ListFilesToolLimitTest(ListFilesToolTestBase):
         self.assertEqual(self.lines(), ["only.py"])
 
 
+class ListFilesToolSensitiveTest(ListFilesToolTestBase):
+    """密钥 / 凭据一类文件不进遍历（13 阶段回归）。
+
+    它们本来就在 root 里面，`resolve_in_root` 拦不住也不该拦；靠的是
+    `tools/paths.py` 的 is_sensitive_file——按**文件名**整条排掉。要看配置
+    长什么样有 `.env.example`（值全是空的，本来就该给人看）。
+    """
+
+    SECRETS = (
+        ".env",
+        ".env.local",
+        ".env.production",
+        "server.pem",
+        "id_rsa",
+        "id_rsa.pub",
+        "deploy.key",
+        "cert.p12",
+        "keystore.jks",
+        "credentials.json",
+        ".netrc",
+        ".pgpass",
+        ".htpasswd",
+        "my.ppk",
+    )
+
+    def test_secret_files_are_not_listed(self):
+        self.make("main.py")
+        for name in self.SECRETS:
+            self.make(name, "OPENAI_API_KEY=sk-真钥匙不该出现在这里")
+
+        self.assertEqual(self.lines(), ["main.py"])
+
+    def test_nested_secret_files_are_not_listed_either(self):
+        # 光挡住根目录那几个没用：真项目里密钥常常躺在子目录里
+        self.make("app/config.py")
+        self.make("deploy/.env", "TOKEN=真令牌")
+        self.make("deploy/id_rsa", "真私钥")
+        self.make("deploy/certs/site.pem", "真证书")
+
+        self.assertEqual(self.lines(), ["app/config.py"])
+
+    def test_the_public_template_is_still_listed(self):
+        # .env.example 是公开模板（值全空），属于项目该给人看的一部分；
+        # 它要是被 `.env.*` 一起吃掉，模型就再也看不到「有这个变量」了
+        self.make("main.py")
+        self.make(".env.example", "OPENAI_API_KEY=\n")
+
+        self.assertEqual(self.lines(), [".env.example", "main.py"])
+
+    def test_a_name_that_merely_resembles_one_is_kept(self):
+        # 白名单式的全名 / 通配匹配，不做子串匹配：这几种都不是密钥文件
+        for name in ("environment.py", "keys.py", "my.env.example.txt", "env"):
+            self.make(name)
+
+        self.assertEqual(
+            self.lines(), ["env", "environment.py", "keys.py", "my.env.example.txt"]
+        )
+
+    def test_the_secret_content_never_shows_up_anywhere(self):
+        self.make("main.py", "print('你好')\n")
+        self.make(".env", "OPENAI_API_KEY=sk-真钥匙不该出现在这里")
+
+        result = self.tool().run()
+
+        self.assertNotIn("sk-", result)  # 连值都没露出来
+
+
 class ListFilesToolSymlinkTest(ListFilesToolTestBase):
     def test_symlinked_directory_is_not_followed(self):
         self.make("real/a.py")
@@ -265,6 +334,41 @@ class ListFilesToolSymlinkTest(ListFilesToolTestBase):
 
             # 链接指向 root 外面，如果不跳过就能顺着它列出系统目录
             self.assertEqual(self.lines(), ["real/a.py"])
+
+    def test_a_junction_is_not_followed_either(self):
+        """Windows 的 junction 也是「链出去的门」，不能当普通目录跟进去。
+
+        junction 和符号链接是两回事：建它不需要管理员权限（`mklink /J`），
+        但 `Path.is_symlink()` 对它返回 **False**（走的是 reparse point 的
+        另一个标记）。只看 is_symlink() 就会把它当成普通目录，跟着它列出
+        root 外面的整个目录树。
+        """
+        self.make("real/a.py")
+
+        with tempfile.TemporaryDirectory() as outside:
+            Path(outside, "secret.py").write_text("x", encoding="utf-8")
+            link = self.root / "junction_to_outside"
+            if not _make_junction(link, Path(outside)):
+                self.skipTest("当前环境不支持创建 junction")
+            self.assertFalse(link.is_symlink())  # 前提：它不是符号链接
+
+            self.assertEqual(self.lines(), ["real/a.py"])
+
+
+def _make_junction(link: Path, target: Path) -> bool:
+    """在 link 处建一个指向 target 的 junction；建不成返回 False。
+
+    只有在 Windows 上才可能成功，其它平台（或没有权限）直接 False——
+    调用方 skipTest，和符号链接那条用例的约定一致。
+    """
+    if os.name != "nt":
+        return False
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0 and link.exists()
 
 
 if __name__ == "__main__":

@@ -6,10 +6,11 @@
 - **接口**：Sandbox 只承诺一件事——在 workspace 以内执行一条命令，
   返回结构化的 CommandResult（命令、工作目录、退出码、两路输出、
   超时状态）。
-- **实现**：现在只有 LocalSandbox（在宿主机上跑，见 local.py）；
-  将来要在容器里跑就再加一个实现，调用方认的是接口，不是实现。
+- **实现**：LocalSandbox（在宿主机上跑，见 local.py）和 DockerSandbox
+  （每次执行一个一次性容器，见 docker.py），调用方认的是接口。
 - **边界**：cwd 必须落在 workspace 以内，这条检查归 Sandbox 层管，
-  不散给调用方——不管哪种实现，逃逸都在这一层挡住。
+  不散给调用方——check_run_args / resolve_cwd 就是那一份，两种实现
+  共用它，所以「逃逸挡得住」对哪种后端都成立。
 
 结果的文本形式（CommandResult.as_text）和 RunCommandTool 的输出逐字
 一致：格式定义在 tools/run_command.py 的 render_result / render_timeout，
@@ -20,7 +21,49 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 
+from tools.base import ToolError
+from tools.paths import resolve_in_root
 from tools.run_command import render_result, render_timeout
+
+
+def check_run_args(
+    command: str, timeout: float | None, default_timeout: float
+) -> float:
+    """run() 的公共校验：命令非空、timeout 是正数。返回这次实际用的秒数。
+
+    说法和 RunCommandTool 划一：调用方（还有模型）从工具那边换过来时，
+    报错措辞对得上，认知不用改。
+    """
+    if not isinstance(command, str) or not command.strip():
+        # 空命令跑出来只会是「退出码 0、什么也没输出」，直接说清楚
+        raise ToolError("命令不能为空")
+
+    seconds = default_timeout if timeout is None else timeout
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+        raise ToolError(f"timeout 必须是数字，收到 {seconds!r}")
+    if seconds <= 0:
+        raise ToolError(f"timeout 必须大于 0，收到 {seconds}")
+    return float(seconds)
+
+
+def resolve_cwd(cwd: str | Path | None, workspace: Path) -> Path:
+    """把 cwd 解析成绝对路径，并确认没有跑出 workspace。
+
+    省略 = workspace 根目录；相对路径从 workspace 算起；绝对路径也接受，
+    但一样要落在 workspace 以内。resolve() 会展开 `..` 和符号链接，判断
+    放在它之后，逃逸就堵死了——顺序反了就等于没查。所有实现共用这一份。
+    """
+    if cwd is None:
+        return workspace
+
+    try:
+        resolved = resolve_in_root(str(cwd), workspace)
+    except ToolError as exc:
+        raise ToolError(f"cwd 超出 workspace 范围：{exc}") from None
+
+    if not resolved.is_dir():
+        raise ToolError(f"cwd 不存在或不是目录：{cwd!r}")
+    return resolved
 
 
 @dataclass(frozen=True)

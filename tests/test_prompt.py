@@ -54,10 +54,11 @@ class PromptAndRegistryTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        # main.build_agent() 会去读 API Key，这里把客户端换掉再装配
+        # main.build_agent() 默认会去读 LLM 配置（API Key / 模型名）；把
+        # 客户端整个换成替身，装配不需要任何真实配置，也不会联网
         import main
 
-        with patch("agent.agent.LLMClient", StubClient):
+        with patch("main.LLMClient", StubClient):
             cls.registry: ToolRegistry = main.build_agent().tools
 
     def tool_names(self) -> list[str]:

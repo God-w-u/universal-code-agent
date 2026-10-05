@@ -150,6 +150,53 @@ class NoMatchTest(SearchChunksToolTestBase):
         self.assertIn("没有找到", self.search(query="FileReader"))
 
 
+class RAGNeverSeesTheHistoryOrTheSecretsTest(SearchChunksToolTestBase):
+    """检索这一路（RAG）也看不到修复历史和密钥文件（13 阶段回归）。
+
+    search_code_chunks 走的是 ChunkIndex ← SymbolIndex ← ProjectIndex ←
+    tools/tree.py 的 iter_files，和 list_files / search_code 同一套遍历规则
+    ——这几条用例就是拿真检索把「同一套」验一遍。
+    """
+
+    def test_the_repair_history_is_not_searchable(self):
+        self.make("pipeline/reader.py", READER)
+        # 历史 JSON 里原样存着上几轮的任务原文和编译诊断
+        self.make(
+            "repair_history/2026-01-01-abcd.json",
+            '{"task": "把 FileReader 改成流式的", "status": "没修好"}\n',
+        )
+
+        text = self.search(query="FileReader 改成流式的")
+
+        self.assertIn("pipeline/reader.py", text)
+        self.assertNotIn("repair_history", text)
+
+    def test_a_secret_file_never_enters_the_index(self):
+        self.make("pipeline/reader.py", READER)
+        self.make(".env", "OPENAI_API_KEY=sk-真钥匙不该出现在这里\n")
+        self.make("deploy/id_rsa", "-----BEGIN 私钥不该出现在这里-----\n")
+
+        tool = self.tool()
+        # 先照常查一次：索引真建了（下面问索引才不是空对空）
+        self.assertIn("pipeline/reader.py", tool.run(query="FileReader", top_k=5))
+
+        # 再拿密钥自己的名字查一遍
+        text = tool.run(query="OPENAI_API_KEY")
+
+        self.assertNotIn("OPENAI_API_KEY=", text)
+        self.assertNotIn("sk-", text)
+
+        # 「检索结果里没有」不等于「索引里没有」：直接问它底下的索引。
+        # 密钥文件在这儿**一条记录都不该有**——不是切块那步被跳过（.env
+        # 本来也没有 symbol、切不出块，光看 chunk 断言不出什么），而是
+        # 压根没进过遍历（tools/tree.py 的 iter_files）。正常文件在，
+        # 说明索引确实建了，不是空索引蒙混过关。
+        paths = {entry.path for entry in tool.index.symbols.project.entries}
+        self.assertIn("pipeline/reader.py", paths)
+        self.assertNotIn(".env", paths)
+        self.assertNotIn("deploy/id_rsa", paths)
+
+
 class TopKTest(SearchChunksToolTestBase):
     def test_top_k_limits_the_lines(self):
         self.make("m.py", MANY)

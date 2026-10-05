@@ -17,11 +17,15 @@ MSVC 那一条路多两件事，都在别处：
 import re
 import shutil
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from tools import diagnostics, vsenv
 from tools.base import Tool, ToolError
 from tools.paths import check_root, resolve_shell_path
 from tools.run_command import RunCommandTool
+
+if TYPE_CHECKING:  # 只为注解；省略 sandbox 时由 RunCommandTool 自己装配
+    from sandbox.base import Sandbox
 
 # 按顺序找：g++ 最优先，然后 clang++，最后才是 MSVC 的 cl。
 # cl 排最后是因为用它得先铺一遍 vcvars 环境（这台机器上实测 2.5 秒），
@@ -133,12 +137,18 @@ class CompileTool(Tool):
         root: Path | None = None,
         compiler: str | None = None,
         timeout: float = DEFAULT_COMPILE_TIMEOUT,
+        sandbox: "Sandbox | None" = None,
     ) -> None:
         self.root = check_root(root)
         # None 表示「到执行的时候再自动找」——放在构造时找的话，
         # 机器上没装编译器会让 main.build_agent() 直接就装配不起来
         self.compiler = compiler
-        self.command_tool = RunCommandTool(root=self.root, timeout=timeout)
+        # sandbox 只是转交给内层工具：省略时它按 root 自己装一个
+        # LocalSandbox（见 RunCommandTool），这里给的是测试口子，
+        # 也是以后换实现（Docker）的接缝
+        self.command_tool = RunCommandTool(
+            root=self.root, timeout=timeout, sandbox=sandbox
+        )
 
     def compile(
         self,

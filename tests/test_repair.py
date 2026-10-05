@@ -16,10 +16,9 @@ from pathlib import Path
 
 from agent import DEFAULT_MAX_REPAIR_ROUNDS, Agent
 from agent.repair import RepairLoop, _digest, _edit_summary, _fingerprint
-from agent.verify import BUILD, COMPILE, EDIT, RUN_TESTS, Verifier
+from agent.verify import COMPILE, EDIT, RUN_TESTS, Verifier
 from tests.test_verify import FakeVerifyTool, ran
 from tools import (
-    BuildTool,
     CompileTool,
     EditFileTool,
     TestTool,

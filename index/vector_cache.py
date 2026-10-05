@@ -13,7 +13,7 @@ scorer 的内存缓存只活在一次进程里；每开一次新进程，两千�
   串用。
 - **key 自带失效**。chunk 的 key 是 `id|digest`（`chunk_key`）：文件一改
   digest 就变，旧向量自然查不到，不存在「拿旧向量给新代码打分」。查询的
-  key 是 `query:文本`（`query_key`）。
+  key 是 `query:` + 文本哈希（`query_key`）——**不存查询原文**。
 - **坏了一点都不许炸**。文件不存在、JSON 坏了、盘满、没权限——读写失败
   一律降级成「没有缓存」，最坏就是回到原来的速度。缓存只影响 embedding
   这一层的快慢，字面打分和 baseline 一个字都不经过它。
@@ -25,6 +25,11 @@ scorer 的内存缓存只活在一次进程里；每开一次新进程，两千�
   按「哪些 key 还算数」加「允许清哪些 chunk」把确认查不到的删掉；查询
   向量永远不动，别的语料的条目也不碰（评估入口里两个语料共用一份文件，
   各扫各的）。
+- **整块没了就整个 id 清掉**（13.6）。文件被删、符号被删 / 改名 / 挪了
+  行，块连 id 都不在了——`prune()` 那种「留还作数的 key」够不着它们（旧
+  条目不在任何 scope 里，会被当成别的语料的东西留着）。`forget_ids()`
+  就是干这个的：明确说「这些 id 没了」，把它名下的条目一律删掉。索引
+  刷新时由 `EmbeddingScorer.forget()` 调过来。
 
 默认放用户目录下（`default_cache_dir`）——不进项目、不会被代码索引扫到。
 不提交任何模型文件或向量数据：这是本机缓存，删了就是慢一点，没有别的。
@@ -33,9 +38,16 @@ scorer 的内存缓存只活在一次进程里；每开一次新进程，两千�
 import hashlib
 import json
 import re
+from collections.abc import Iterable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from index.chunks import CodeChunk
+
+if TYPE_CHECKING:
+    # 只在做类型检查时导入：index.embedding 反过来要用本模块，顶层真 import
+    # 会成环
+    from index.embedding import Embedder
 
 # 缓存文件的格式版本。结构一变就 +1：旧文件自动当空的。
 CACHE_VERSION = 1
@@ -43,8 +55,9 @@ CACHE_VERSION = 1
 # 写盘时保留的小数位：余弦相似度用不到更多精度，文件能小一截。
 PRECISION = 6
 
-# 查询向量的 key 前缀（`query:文本`）。chunk 的 key 不带它——prune 靠这个
-# 前缀划界：查询向量永远不清，chunk 向量才可能被清。
+# 查询向量的 key 前缀（`query:` + 文本哈希，见 query_key：不存原文）。
+# chunk 的 key 不带它——prune 靠这个前缀划界：查询向量永远不清，chunk
+# 向量才可能被清。
 QUERY_PREFIX = "query:"
 
 # 分段 key 结尾的段号后缀（embedding._cache_key 拼上去的 `#s0`、`#s12`）。
@@ -64,7 +77,7 @@ def _chunk_id_of(key: str) -> str:
     return chunk_id if sep else key
 
 
-def namespace_of(embedder) -> str:
+def namespace_of(embedder: "Embedder") -> str:
     """给 embedder 起一个稳定的命名空间：类名 + 模型的区分信息。
 
     LocalEmbedder 有 `model_name`（不同模型名 → 不同空间）；FakeEmbedder
@@ -96,8 +109,19 @@ def chunk_key(chunk: CodeChunk) -> str:
 
 
 def query_key(text: str) -> str:
-    """查询的缓存 key。和 chunk key 前缀分开，不会撞。"""
-    return f"{QUERY_PREFIX}{text}"
+    """查询的缓存 key：`query:` 前缀 + 文本的哈希。和 chunk key 不会撞。
+
+    **为什么不直接用原文**：这份 JSON 落在用户目录里长期留着，而查询文本
+    是「用户问过什么」——任务描述、文件名、路径、甚至粘进去的代码片段。
+    拿原文当 key，等于把这些原样抄了一份存进文件，谁打开都看得见（内容
+    是明文的，跟向量不一样）。哈希之后一一对应不变：同一句还是同一格，
+    没问过的还是落空，命中率和以前完全一样，只是文件里认不出问的是什么。
+
+    `QUERY_PREFIX` 照旧：prune / forget_ids 靠它一眼认出「这是查询向量，
+    永远不动」，和向量本身怎么存无关。
+    """
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return f"{QUERY_PREFIX}{digest}"
 
 
 def default_cache_dir() -> Path:
@@ -129,7 +153,7 @@ class VectorCache:
     def get(self, key: str) -> tuple[float, ...] | None:
         return self._load().get(key)
 
-    def get_many(self, keys) -> dict[str, tuple[float, ...]]:
+    def get_many(self, keys: Iterable[str]) -> dict[str, tuple[float, ...]]:
         """按 key 们取，返回命中的那些（key → 向量）。"""
         vectors = self._load()
         return {key: vectors[key] for key in keys if key in vectors}
@@ -154,7 +178,9 @@ class VectorCache:
         if self._dirty and not self._foreign and self._vectors is not None:
             self._flush()
 
-    def prune(self, keep, *, scope=None) -> int:
+    def prune(
+        self, keep: Iterable[str], *, scope: Iterable[str] | None = None
+    ) -> int:
         """删掉已经查不到的 chunk 向量，返回删掉的条数（9.6）。
 
         - `keep`：还作数的**完整 key** 集合（chunk 的，分段时含 `#sN`
@@ -177,19 +203,52 @@ class VectorCache:
 
         keep_set = set(keep)
         allowed = None if scope is None else set(scope)
-        doomed = [
+        return self._drop(
             key
             for key in vectors
             if not key.startswith(QUERY_PREFIX)
             and (allowed is None or _chunk_id_of(key) in allowed)
             and key not in keep_set
-        ]
-        for key in doomed:
-            del vectors[key]
-        if doomed:
+        )
+
+    def forget_ids(self, chunk_ids: Iterable[str]) -> int:
+        """整个 chunk id 不作数了：把它名下的条目全部删掉，返回删掉的条数。
+
+        和 prune() 的分工：prune 管「id 还在、但这一版（digest / 段号）过时
+        了」——按还作数的完整 key 留；这里管「id 自己没了」——文件被删、符号
+        被删 / 改名 / 挪了行，这些块的 key 永远不会再被问到，连 id 都凑不齐
+        一份「还作数的 key」去 prune，只能整个 id 一起清。
+
+        查询向量还是永远不动。缓存坏了 / 写不进去照老规矩只降级不炸。
+        """
+        gone = set(chunk_ids)
+        if not gone:
+            return 0
+        vectors = self._load()
+        if self._foreign or not vectors:
+            return 0
+        return self._drop(
+            key
+            for key in vectors
+            if not key.startswith(QUERY_PREFIX) and _chunk_id_of(key) in gone
+        )
+
+    def _drop(self, doomed: Iterable[str]) -> int:
+        """删掉这批 key，真删了才写盘。返回删掉的条数。
+
+        doomed 可能是生成器（上面两个调用方都是现推的）：先收成一份名单再
+        动手——边挑边删就是「遍历着一个正在变小的字典」。
+        """
+        vectors = self._load()
+        removed = 0
+        for key in list(doomed):
+            if key in vectors:
+                del vectors[key]
+                removed += 1
+        if removed:
             self._dirty = True
             self.flush()
-        return len(doomed)
+        return removed
 
     def _load(self) -> dict[str, tuple[float, ...]]:
         if self._vectors is not None:

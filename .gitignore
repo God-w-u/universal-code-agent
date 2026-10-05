@@ -9,6 +9,12 @@ __pycache__/
 .coverage
 htmlcov/
 
+# 静态检查工具（ruff / mypy）的缓存。两个工具会往自己目录里放一份 `*`
+# 的 .gitignore 自保，这里再显式写一遍：看一眼 .gitignore 就知道全貌，
+# 不依赖工具的版本行为
+.ruff_cache/
+.mypy_cache/
+
 # 本机配置 / 密钥：只留没有真值的样例（.env.example）
 .env
 .env.*
@@ -16,6 +22,14 @@ htmlcov/
 
 # 修复运行的历史记录
 repair_history/
+
+# 运行产物（日志、临时文件）；向量缓存和 Memory 数据在用户目录下，不在项目里
+*.log
+*.tmp
+
+# Memory 运行数据（默认在用户目录 ~/.cache/universal-code-agent 下，
+# 不在项目里；这行是兜底：有人把 store 指到项目内时数据也别入库）
+memory.jsonl
 
 # Windows 快捷方式
 *.lnk

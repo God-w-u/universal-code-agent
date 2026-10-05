@@ -161,6 +161,8 @@ class LocalEmbedder(Embedder):
     def dimension(self) -> int:
         if self._dimension is None:
             self._load_model()
+        # _load_model 末尾一定会把它填上；写出来是给读代码的人和类型检查看的
+        assert self._dimension is not None
         return self._dimension
 
     def embed(self, texts: Sequence[str]) -> tuple[Vector, ...]:

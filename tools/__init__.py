@@ -3,6 +3,7 @@
 from tools.base import Tool, ToolError
 from tools.build import BuildTool
 from tools.calculator import CalculatorTool
+from tools.callgraph import CallGraphTool
 from tools.code_summary import CodeSummaryTool
 from tools.compile import CompileTool
 from tools.edit_file import EditFileTool
@@ -23,6 +24,7 @@ __all__ = [
     "ToolResult",
     "BuildTool",
     "CalculatorTool",
+    "CallGraphTool",
     "ListFilesTool",
     "ReadFileTool",
     "SearchCodeTool",

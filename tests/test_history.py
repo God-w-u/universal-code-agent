@@ -17,7 +17,7 @@ from pathlib import Path
 
 from agent import Agent, RepairHistory
 from agent.history import FIXED, NO_REPAIR, UNFIXED
-from agent.verify import COMPILE, EDIT, RUN_TESTS
+from agent.verify import COMPILE, RUN_TESTS
 from tests.test_repair import RepairTestBase, StubClient, final_reply, tool_call_reply
 from tests.test_verify import ran
 from tools import EditFileTool, ToolRegistry

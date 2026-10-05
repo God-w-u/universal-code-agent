@@ -107,15 +107,27 @@ def segment_chunk(chunk: CodeChunk, max_tokens: int) -> tuple[str, ...]:
     return segment_text(compact_text(chunk), max_tokens)
 
 
-def strategy_id(segmented: bool) -> str:
-    """缓存命名空间里的「文本管线版本」：切分开关 + 两个拼法版本。
+def strategy_id(segmented: bool, max_tokens: int | None = None) -> str:
+    """缓存命名空间里的「文本管线版本」：切分开关 + 窗口 + 两个拼法版本。
 
     分段和不分段是两条管线（向量含义不同），必须落在不同命名空间；切法
     或拼法任一改版，字符串就变，旧向量自动作废。
+
+    **窗口也在身份里**（`max_tokens`）。段怎么切由它定（预算 = 窗口 -
+    余量，见 `segment_text`），窗口一改，`#s0` 还是那个 key、指的却是另
+    一段文本——同一批 key 对着两批不同的向量。以前这里只有「分段开 /
+    关」两档，于是「同一个模型换窗口」会静默复用旧向量：打分时拿到的
+    是按老窗口切的段，和新窗口下的第 0 段根本不是一回事。窗口进来以后
+    它自动落到另一个命名空间（另一个缓存文件），旧向量够不着。
     """
-    if segmented:
+    if not segmented:
+        return TEXT_STRATEGY
+    if max_tokens is None:
+        # 理论上到不了这儿：分段只对声明了窗口的 embedder 开（见
+        # segmentation_active）。留着是给「分段但窗口未知」一个说法，
+        # 也保住 9.5 时这个函数的两段式取值。
         return f"{TEXT_STRATEGY}+{SEGMENT_STRATEGY}"
-    return TEXT_STRATEGY
+    return f"{TEXT_STRATEGY}+{SEGMENT_STRATEGY}@w{max_tokens}"
 
 
 def _split_header(text: str) -> tuple[str, str]:

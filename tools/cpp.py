@@ -28,6 +28,8 @@
 
 出门两个函数，同一条扫描：extract() 给「看一眼结构」用（code_summary）；
 spans() 每条多带种类、名字和行范围，给「按范围切代码」用（index/symbols.py）。
+code_only() 是扫描的另一半：把注释和字符串换成空格后的代码版文本，调用图
+（callgraph/cpp.py）找调用点也用它，不然注释里写一句 `helper()` 就成了调用。
 """
 
 import re
@@ -135,6 +137,16 @@ def spans(text: str) -> list[Span]:
     entries.extend(_scan(code.split("\n"), clean.split("\n")))
     # 指令和结构是分开收的，按行号合流（sort 是稳定排序，同行的保持原顺序）
     return sorted(entries, key=lambda entry: entry.line)
+
+
+def code_only(text: str) -> str:
+    """注释和字符串都换成空格的「代码版」文本（和原文逐行一一对应）。
+
+    spans() 数括号用的就是它（经 _blank）；调用图（callgraph/cpp.py）找
+    调用点也借它——注释里写一句 `helper()`、字符串里出现 `run(`，都不该
+    被当成一次调用。长度和原文完全一致，行号可以直接用。
+    """
+    return _blank(text)[0]
 
 
 def _blank(text: str) -> tuple[str, str]:
@@ -303,7 +315,9 @@ def _collect(
             # 所以只压个不挡事的空标记
             scopes.append(("", None))
 
-    if index is None:
+    # found 为 None 时 index 一定也是 None（上面同一行算出来的）；这里一并
+    # 写上，是给读代码的人和类型检查看的：往下 found 一定有值
+    if index is None or found is None:
         return
 
     # 行号报「名字在哪一行」，不是「这段声明从哪一行开始」：`template <...>` 和

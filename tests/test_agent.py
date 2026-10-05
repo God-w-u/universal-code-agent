@@ -337,6 +337,87 @@ class AgentToolErrorFeedbackTest(unittest.TestCase):
                 self.assertEqual(answer, self.FINAL)
 
 
+class AgentToolArgumentsShapeTest(unittest.TestCase):
+    """`arguments` 的形状不对时不许把异常穿透出去（13 阶段回归）。
+
+    规范说 arguments 是 JSON 字符串，但那是**模型 / 网关给的**，形状不完全
+    由我们说了算。以前只挡了「JSON 坏了」这一种，`json.loads` 拿到数字 /
+    列表 / None 会抛 TypeError——它不在 run() 认得的那几种异常里，回滚不会
+    发生，历史里就此留下一条没有 tool 回复的 assistant tool_calls：上游
+    之后**每一次**请求都会拒掉它，这段会话等于废了。
+    """
+
+    FINAL = "好的，我换个方式"
+
+    def run_with_raw_arguments(self, arguments):
+        """让模型要求调工具，arguments 想给什么形状就给什么形状。"""
+        client = FakeLLMClient([tool_call_reply(("calculator", arguments)), self.FINAL])
+        agent = Agent(client=client, tools=ToolRegistry([CalculatorTool()]))
+        return agent.run("算一下"), agent
+
+    def test_arguments_that_are_not_a_string_are_fed_back(self):
+        for arguments in (5, 1.5, None, True, ["1+1"], b"{}"):
+            with self.subTest(arguments=arguments):
+                answer, agent = self.run_with_raw_arguments(arguments)
+
+                self.assertEqual(answer, self.FINAL)  # 没炸，这一轮照常走完
+                # 回灌的是一条 tool 消息，形状配得上上面那条 tool_calls
+                self.assertEqual(agent.messages[3]["role"], "tool")
+                self.assertTrue(agent.messages[3]["content"].startswith("错误："))
+
+    def test_the_history_stays_acceptable_to_the_upstream(self):
+        # 这一轮完整走完（没有半截 tool_calls），而且能接着开下一轮
+        answer, agent = self.run_with_raw_arguments(5)
+
+        roles = [message["role"] for message in agent.messages]
+
+        self.assertEqual(answer, self.FINAL)
+        self.assertEqual(roles, ["system", "user", "assistant", "tool", "assistant"])
+        self.assertEqual(
+            len(agent.messages[2]["tool_calls"]),
+            1,  # 要了一次工具
+        )
+        self.assertEqual(agent.messages[3]["tool_call_id"], "call_1")
+
+    def test_arguments_already_parsed_into_an_object_still_work(self):
+        # 有些 OpenAI 兼容网关直接把对象给过来。值是对的，收下就是——
+        # 这里钉住「正常 tool calling 一步没变」
+        answer, agent = self.run_with_raw_arguments({"expression": "1+1"})
+
+        self.assertEqual(answer, self.FINAL)
+        self.assertEqual(agent.messages[3]["role"], "tool")
+        self.assertNotIn("错误", agent.messages[3]["content"])
+        self.assertIn("2", agent.messages[3]["content"])  # 工具真跑了
+
+    def test_a_tool_call_that_is_not_an_object_rolls_the_run_back(self):
+        # 连 call_id 都取不出来，造不出配得上的 tool 回复：只能整轮回滚，
+        # 历史里绝不能留下「要了工具却没有回复」的半截结构
+        client = FakeLLMClient([{"role": "assistant", "content": "", "tool_calls": [7]}])
+        agent = Agent(client=client, tools=ToolRegistry([CalculatorTool()]))
+
+        with self.assertRaises(AgentError):
+            agent.run("算一下")
+
+        self.assertEqual([m["role"] for m in agent.messages], ["system"])
+
+    def test_a_function_that_is_not_an_object_rolls_the_run_back_too(self):
+        client = FakeLLMClient(
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"id": "call_1", "function": "calculator"}],
+                }
+            ]
+        )
+        agent = Agent(client=client, tools=ToolRegistry([CalculatorTool()]))
+
+        with self.assertRaises(AgentError):
+            agent.run("算一下")
+
+        self.assertEqual([m["role"] for m in agent.messages], ["system"])
+
+
 class AgentToolLoopLimitTest(unittest.TestCase):
     def test_limit_reached_raises_agent_error_and_rolls_back(self):
         # 模型一直要求调工具，永远不给最终回答

@@ -1,0 +1,74 @@
+# CI：跑全量 unittest，入口就是项目自己的一键测试脚本
+# （Linux 用 `python run_tests.py`，Windows 用 `run_tests.bat`）。
+#
+# - 两个 job 都用 Python 3.12（项目要求 3.10+，3.12 是本地开发 / 验证用的
+#   版本）；Windows 那个同时验证 .bat 入口在干净机器上真的能用。
+# - **不需要任何真实凭据 / 外部服务**：不要 API Key、不要 Docker daemon、
+#   不下载 embedding 模型。测试全离线；需要 Docker / 真模型的用例自己
+#   skip（见 README「一键测试」与「Docker Sandbox」）。
+# - 失败必须非 0：测试入口本身就是最后一步，它的退出码直接决定 job 结果。
+# - 不为了 CI 改任何生产代码，也不跳过任何测试。
+# - 依赖装的是 requirements-dev.txt（= requirements.txt + 测试专用的 httpx +
+#   ruff / mypy，原因见该文件里的注释），装完就是测试需要的全部东西。
+# - 静态检查（ruff + mypy）只在 Linux job 跑一遍：它和平台无关，Windows
+#   job 的职责是验证 .bat 一键测试入口。两个工具的配置都在 pyproject.toml。
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: 全量测试（Ubuntu / Python 3.12）
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 建虚拟环境并装依赖
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -r requirements-dev.txt
+
+      - name: 静态检查（ruff + mypy，配置在 pyproject.toml）
+        run: |
+          .venv/bin/python -m ruff check .
+          .venv/bin/python -m mypy
+
+      - name: 一键测试（run_tests.py 自动切到 .venv 里的解释器）
+        run: python run_tests.py
+
+  windows:
+    name: 一键测试（Windows / Python 3.12）
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: cmd
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 建虚拟环境并装依赖
+        run: |
+          python -m venv .venv
+          .venv\Scripts\python.exe -m pip install --upgrade pip
+          .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+
+      - name: 一键测试（run_tests.bat，不依赖 PATH 上的 python）
+        run: .\run_tests.bat

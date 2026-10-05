@@ -1,6 +1,7 @@
 """Agent 运行时：会话历史 + tool-calling 循环 + 上下文裁剪 + 执行记录。"""
 
 from agent.agent import DEFAULT_MAX_STEPS, Agent, AgentError
+from agent.cancel import CancellationContext, RunCancelled
 from agent.context import ContextManager
 from agent.history import RepairHistory
 from agent.prompt import DEFAULT_SYSTEM_PROMPT, build_system_prompt
@@ -11,6 +12,8 @@ from agent.verify import Comparison, Verification, Verifier, compare
 __all__ = [
     "Agent",
     "AgentError",
+    "CancellationContext",
+    "RunCancelled",
     "DEFAULT_SYSTEM_PROMPT",
     "build_system_prompt",
     "DEFAULT_MAX_STEPS",

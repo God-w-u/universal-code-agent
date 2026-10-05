@@ -160,7 +160,7 @@ class RepairLoop:
         self.verifier = verifier
         self.max_rounds = max_rounds
         self.rounds: list[RepairRound] = []
-        self.stopped: str | None = None  # 停下来的原因；一旦停下就一直停着
+        self.stopped: str | None = None
         self.pending = False  # 有一次改完没验过，还欠着没修好
 
         self._broken = False  # 验证器最近看到的状态是坏的
@@ -170,6 +170,36 @@ class RepairLoop:
         self._prints: list[str] = []  # 每一轮改动的指纹，用来认「又改了一遍」
         self._seen: tuple[str, Any] | None = None  # 上一轮卡在哪一关、看到什么
         self._answer = ""  # 模型不肯再动手时说的那句话，报告里带上
+
+    def reset(self) -> None:
+        """开始新的一轮任务：把上一次留下的状态全部清掉。
+
+        这一堆字段全是**一次 run() 之内**的东西——`stopped` 的意思是
+        「这次任务修不动了」，不是「这个 Agent 从此报废」。不清的话，
+        上一轮停下之后，`review()` 会一直早返回同一份 REPORT：模型本轮
+        照常被调用、回答却被丢掉，用户拿到的是上一轮的旧报告；连带
+        `Agent.run` 末尾那句 `ok = stopped is None and ...` 也会把之后
+        每一个成功任务都记成 Memory 里的失败。
+
+        `rounds` / `_nudged` / `_broken` / `_seen` / `_digest` / `_prints`
+        同样跨轮累加，会让新一轮第一轮就撞上限、误报「原地打转」、
+        或拿上一轮的编译结果当诊断基线。所以一处清干净，别挑着清。
+
+        验证器手里那份「上一次诊断」也要清——它是本轮之内做前后对比用的，
+        跨轮就是拿别的任务的编译结果当基线。Verifier 对象本身不换（它
+        只是 registry/executor 的壳，没有自己的历史），清状态就够了。
+        """
+        self.rounds.clear()
+        self.stopped = None
+        self.pending = False
+        self._broken = False
+        self._path = ""
+        self._nudged = False
+        self._digest = None
+        self._prints.clear()
+        self._seen = None
+        self._answer = ""
+        self.verifier.reset()
 
     # ------------------------------------------------------------------
     # 看：每次工具调用之后
@@ -532,8 +562,11 @@ def _fingerprint(path: str, edit_text: str, arguments: dict[str, Any]) -> str:
     if not isinstance(content, str):
         content = ""
     # 只把 \r\n 归一成 \n，别的都别动：缩进、结尾有没有换行都可能是改动本身，
-    # 归一多了会把「不一样的两次改动」认成同一次
-    body = f"{path}\n{_position(edit_text)}\n{content.replace('\r\n', '\n')}"
+    # 归一多了会把「不一样的两次改动」认成同一次。
+    # 先换好再拼：f-string 的表达式里带反斜杠要 Python 3.12 才允许，单拎一行
+    # 出来 3.10 / 3.11 也能跑（见 README 的 Python 版本要求）。
+    normalized = content.replace("\r\n", "\n")
+    body = f"{path}\n{_position(edit_text)}\n{normalized}"
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 

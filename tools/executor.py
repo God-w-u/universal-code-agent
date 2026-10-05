@@ -11,6 +11,9 @@
 
 另外：如果给了 trace，每次调用都会往里记一条（工具名、参数、成败、耗时）。
 记录是纯附加的，不影响返回值，也不影响工具怎么执行。
+
+13.2 起还多一句「要开始跑了」的通知（trace.start_tool_call）：在工具真正
+执行**之前**发出去，给流式接口实时推进度用。它同样只通知、记录不了什么。
 """
 
 import time
@@ -57,6 +60,7 @@ class ToolExecutor:
 
     def execute(self, name: str, **arguments: Any) -> ToolResult:
         """执行一个工具，无论成功失败都返回 ToolResult。"""
+        self._notify_start(name, arguments)
         result = self._run(name, arguments)
         self._record(name, arguments, result)
         return result
@@ -86,6 +90,15 @@ class ToolExecutor:
         return ToolResult(
             success=True, content=content, metadata=self._metadata(name, started)
         )
+
+    def _notify_start(self, name: str, arguments: dict[str, Any]) -> None:
+        """跑之前的通知，和 _record（跑完记一条）是两件事。
+
+        参数不合法、工具不存在这类事发生在这之后——也就是说前端会先看到
+        「开始跑 echo 了」，再看到「echo 失败」。这没错：模型确实要求调它了。
+        """
+        if self.trace is not None:
+            self.trace.start_tool_call(name, arguments)
 
     def _record(
         self, name: str, arguments: dict[str, Any], result: ToolResult

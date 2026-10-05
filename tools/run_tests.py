@@ -6,10 +6,14 @@
 """
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from tools.base import Tool
 from tools.paths import check_root
 from tools.run_command import RunCommandTool
+
+if TYPE_CHECKING:  # 只为注解；省略 sandbox 时由 RunCommandTool 自己装配
+    from sandbox.base import Sandbox
 
 # 第一版只支持这一条：项目自己的单元测试入口。
 TEST_COMMAND = "python -m unittest discover -s tests -t ."
@@ -44,12 +48,16 @@ class TestTool(Tool):
         root: Path | None = None,
         timeout: float = DEFAULT_TEST_TIMEOUT,
         command: str = TEST_COMMAND,
+        sandbox: "Sandbox | None" = None,
     ) -> None:
         self.root = check_root(root)
         # 默认是上面钉死的那条；留成参数只是为了让测试能换成一个假项目，
         # 不是给模型用的——它不在 parameters 里，模型改不了。
         self.command = command
-        self.command_tool = RunCommandTool(root=self.root, timeout=timeout)
+        # sandbox 转交给内层工具：省略时它按 root 自己装一个 LocalSandbox
+        self.command_tool = RunCommandTool(
+            root=self.root, timeout=timeout, sandbox=sandbox
+        )
 
     def run_tests(self, timeout: float | None = None) -> str:
         """跑一次项目的单元测试，把 RunCommandTool 的结果原样返回。"""
