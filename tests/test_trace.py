@@ -52,6 +52,36 @@ class BrokenTool(Tool):
         return 1 / 0
 
 
+class FakeSearchTool(Tool):
+    """名字在位置白名单里、输出格式也照 search_code 来——执行层该提出位置。
+
+    真工具怎么产出这一行的在 tests/test_tool_locations.py，这里钉的是
+    「执行层记得提、也只提位置」这一段接线。
+    """
+
+    name = "search_code"
+    description = "假的按关键词找行"
+    parameters = {
+        "keyword": {"type": "string", "description": "关键词", "required": True},
+    }
+
+    def execute(self, keyword: str) -> str:
+        if keyword == "没有":
+            return "没有找到匹配的行。"
+        return "main.py:7: def run(self):\nmain.py:20: def stop(self):"
+
+
+class AngrySearchTool(Tool):
+    """名字在白名单里，但这次调用失败了——失败的不提位置。"""
+
+    name = "search_code"
+    description = "假的按关键词找行：总是拒绝执行"
+    parameters = {}
+
+    def execute(self) -> str:
+        raise ToolError("搜不了")
+
+
 class FakeLLMClient:
     """按剧本回复的假客户端。"""
 
@@ -125,6 +155,7 @@ class TraceEventTest(unittest.TestCase):
         self.assertTrue(event.success)
         self.assertEqual(event.error, "")
         self.assertEqual(event.duration_seconds, 0.12)
+        self.assertEqual(event.locations, [])
 
     def test_to_dict_shape(self):
         self.assertEqual(
@@ -136,6 +167,7 @@ class TraceEventTest(unittest.TestCase):
                 "success": True,
                 "error": "",
                 "duration_seconds": 0.12,
+                "locations": [],
             },
         )
 
@@ -153,6 +185,7 @@ class TraceEventTest(unittest.TestCase):
         self.assertEqual(event.error, "")
         self.assertEqual(event.duration_seconds, 0.0)
         self.assertFalse(event.success)
+        self.assertEqual(event.locations, [])
 
     def test_arguments_default_is_not_shared_between_instances(self):
         first = TraceEvent(type="tool_call", tool="a")
@@ -161,6 +194,24 @@ class TraceEventTest(unittest.TestCase):
         first.arguments["x"] = 1
 
         self.assertEqual(second.arguments, {})
+
+    def test_locations_default_is_not_shared_between_instances(self):
+        first = TraceEvent(type="tool_call", tool="a")
+        second = TraceEvent(type="tool_call", tool="b")
+
+        first.locations.append({"path": "main.py", "line": 1})
+
+        self.assertEqual(second.locations, [])
+
+    def test_locations_round_trip_through_to_dict(self):
+        event = self.make(
+            locations=[{"path": "main.py", "line": 3, "symbol": "run", "kind": "method"}]
+        )
+
+        self.assertEqual(
+            event.to_dict()["locations"],
+            [{"path": "main.py", "line": 3, "symbol": "run", "kind": "method"}],
+        )
 
     def test_is_frozen(self):
         with self.assertRaises(dataclasses.FrozenInstanceError):
@@ -206,6 +257,7 @@ class TraceTest(unittest.TestCase):
                     "success": True,
                     "error": "",
                     "duration_seconds": 0.0,
+                    "locations": [],
                 }
             ],
         )
@@ -219,6 +271,36 @@ class TraceTest(unittest.TestCase):
         original["text"] = "改掉了"
 
         self.assertEqual(trace.events[0].arguments, {"text": "hi"})
+
+    def test_locations_are_kept_as_given(self):
+        trace = Trace()
+
+        event = trace.record_tool_call(
+            tool="search_code",
+            arguments={"keyword": "def "},
+            success=True,
+            locations=[{"path": "main.py", "line": 7}],
+        )
+
+        self.assertEqual(event.locations, [{"path": "main.py", "line": 7}])
+
+    def test_locations_are_snapshotted(self):
+        # 和 arguments 一个道理：记完再改原列表，记录里那份不动
+        original = [{"path": "main.py", "line": 7}]
+        trace = Trace()
+        trace.record_tool_call(tool="search_code", arguments={}, success=True, locations=original)
+
+        original[0]["line"] = 99
+        original.append({"path": "别的.py", "line": 1})
+
+        self.assertEqual(trace.events[0].locations, [{"path": "main.py", "line": 7}])
+
+    def test_no_locations_means_an_empty_list(self):
+        trace = Trace()
+
+        trace.record_tool_call(tool="echo", arguments={}, success=True)
+
+        self.assertEqual(trace.events[0].locations, [])
 
 
 class ExecutorTraceTest(unittest.TestCase):
@@ -340,6 +422,79 @@ class ExecutorTraceTest(unittest.TestCase):
         executor.execute("echo", text="hi")
 
         self.assertEqual(len(executor.trace), 1)
+
+
+class ExecutorLocationsTest(unittest.TestCase):
+    """14.3：执行层从成功结果里提位置，**只提位置**，正文照旧不进 Trace。"""
+
+    def make_executor(self, trace=None, *tools):
+        return ToolExecutor(ToolRegistry(list(tools)), trace=trace)
+
+    def test_locations_are_extracted_from_a_successful_call(self):
+        trace = Trace()
+        executor = self.make_executor(trace, FakeSearchTool())
+
+        executor.execute("search_code", keyword="def ")
+
+        self.assertEqual(
+            trace.events[0].locations,
+            [{"path": "main.py", "line": 7}, {"path": "main.py", "line": 20}],
+        )
+
+    def test_the_content_itself_never_reaches_the_trace(self):
+        trace = Trace()
+        executor = self.make_executor(trace, FakeSearchTool())
+
+        result = executor.execute("search_code", keyword="def ")
+
+        self.assertIn("def run", result.content)  # Agent 拿到的还是完整正文
+        recorded = json.dumps(trace.to_dicts(), ensure_ascii=False)
+        self.assertNotIn("def run", recorded)  # 记录里只有位置，没有正文
+
+    def test_a_tool_outside_the_whitelist_gives_no_locations(self):
+        trace = Trace()
+        executor = self.make_executor(trace, EchoTool())
+
+        executor.execute("echo", text="main.py:7: def run(self):")
+
+        self.assertEqual(trace.events[0].locations, [])
+
+    def test_a_failed_call_gives_no_locations(self):
+        trace = Trace()
+        executor = self.make_executor(trace, AngrySearchTool())
+
+        executor.execute("search_code")
+
+        self.assertFalse(trace.events[0].success)
+        self.assertEqual(trace.events[0].locations, [])
+
+    def test_a_result_that_matches_nothing_gives_no_locations(self):
+        trace = Trace()
+        executor = self.make_executor(trace, FakeSearchTool())
+
+        executor.execute("search_code", keyword="没有")
+
+        self.assertEqual(trace.events[0].locations, [])
+
+    def test_no_trace_means_no_extraction_at_all(self):
+        # 不记录的时候连提都不提：位置提取是记录的一部分
+        executor = self.make_executor(None, FakeSearchTool())
+
+        result = executor.execute("search_code", keyword="def ")
+
+        self.assertTrue(result.success)
+        self.assertIsNone(executor.trace)
+
+    def test_locations_do_not_change_the_result(self):
+        plain = self.make_executor(None, FakeSearchTool())
+        traced = self.make_executor(Trace(), FakeSearchTool())
+
+        without = plain.execute("search_code", keyword="def ")
+        withtrace = traced.execute("search_code", keyword="def ")
+
+        self.assertEqual(without.content, withtrace.content)
+        self.assertEqual(without.success, withtrace.success)
+        self.assertEqual(set(without.metadata), set(withtrace.metadata))
 
 
 class TraceObserverTest(unittest.TestCase):

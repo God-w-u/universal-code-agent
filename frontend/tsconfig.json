@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "types": ["vite/client"],
+
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["src"],
+  // 测试文件单独一份 tsconfig.test.json：那边要用 node 的类型（真起 http 服务器），
+  // 而浏览器代码这边**故意不给** node 类型——省得有人写出 process.env 这种在
+  // 浏览器里不存在的东西还一路绿灯
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
+}

@@ -1,0 +1,11 @@
+{
+  // 测试文件的类型检查：在 src 那份的基础上多给 node 的类型
+  // （client.test.ts 会真起一个 node:http 服务器当假后端）。
+  // 被 import 的源码文件也会一起进这个程序，所以它们仍然按同一套严格选项检查。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["vite/client", "node"]
+  },
+  "include": ["src/**/*.test.ts", "src/**/*.test.tsx"],
+  "exclude": []
+}

@@ -10,13 +10,16 @@ test_trace.py；这里钉的是端到端的那条流。13.3 起流式接口也�
 
 import http.client
 import json
+import tempfile
 import threading
+from pathlib import Path
 
 from agent import Agent, AgentError
 from llm import LLMError
 from tests.test_agent import FakeLLMClient, tool_call_reply
 from tests.test_api import ApiCase
 from tools import CalculatorTool, Tool, ToolRegistry
+from tools.search_code import SearchCodeTool
 
 
 class EchoTool(Tool):
@@ -175,6 +178,16 @@ class StreamFormatTest(StreamCase):
         self.assertEqual(result["error"], "")
         self.assertGreaterEqual(result["duration_seconds"], 0)
 
+    def test_the_tool_result_frame_has_exactly_these_keys(self):
+        # 键逐个钉死：往这一帧里多塞一样东西（正文、参数原值、token……）都得
+        # 先改这个用例，改的时候自然会有人问一句「这该推吗」
+        result = self.stream_events("任务甲")[2][1]
+
+        self.assertEqual(
+            set(result),
+            {"tool", "success", "duration_seconds", "error", "locations"},
+        )
+
     def test_the_tool_output_is_not_pushed_to_the_client(self):
         _, _, raw = self.stream("任务甲")
 
@@ -184,6 +197,117 @@ class StreamFormatTest(StreamCase):
         # tool_result 里也没有放正文的键
         result = self.parse(raw)[2][1]
         self.assertNotIn("content", result)
+        # echo 不在位置白名单里：返回正文再长，也不该被当成位置推出去
+        self.assertEqual(result["locations"], [])
+
+
+class SearchTool(Tool):
+    """名字和输出格式都照 search_code 来：这一帧要看出位置信息确实推得出来。
+
+    真工具（文件怎么搜、行号怎么数）在 tools/search_code.py，它的输出格式和
+    位置怎么提在 tests/test_tool_locations.py；这里只用一段固定正文验
+    「提好的位置能从 Trace 一路走到 SSE 帧里」。
+    """
+
+    name = "search_code"
+    description = "假的按关键词找行"
+    parameters = {
+        "keyword": {"type": "string", "description": "关键词", "required": True},
+    }
+
+    # 这一行是「正文」：帧里只该出现路径和行号，不该出现它
+    MATCHED_LINE = "def 只该在正文里出现的名字(self):"
+    # 搜不到时工具自己的说法（照 tools/search_code.py 的 _render 抄的）
+    NOTHING = "（没有找到包含 '没有' 的行）"
+
+    def execute(self, keyword: str) -> str:
+        if keyword == "没有":
+            return self.NOTHING
+        return f"agent/agent.py:42: {self.MATCHED_LINE}"
+
+
+class ToolLocationsStreamTest(StreamCase):
+    """14.3：位置信息（只有位置）会随 tool_result 帧推给前端。"""
+
+    def setUp(self):
+        client = FakeLLMClient(
+            [tool_call_reply(("search_code", '{"keyword": "def "}')), "看完了。"]
+        )
+        self.start(Agent(client=client, tools=ToolRegistry([SearchTool()])))
+
+    def test_the_locations_ride_along_with_the_result_frame(self):
+        result = self.stream_events("任务甲")[2][1]
+
+        self.assertEqual(result["tool"], "search_code")
+        self.assertEqual(result["locations"], [{"path": "agent/agent.py", "line": 42}])
+
+    def test_the_matched_source_line_stays_in_the_tool_output(self):
+        _, _, raw = self.stream("任务甲")
+
+        text = raw.decode("utf-8")
+        self.assertNotIn(SearchTool.MATCHED_LINE, text)
+        # 文件名和行号是位置，本来就该看得到
+        self.assertIn("agent/agent.py", text)
+
+    def test_only_the_location_fields_are_pushed(self):
+        # search_code 的输出里只有路径和行号可提：不该凭空多出符号、起止行
+        self.assertEqual(
+            set(self.stream_events("任务甲")[2][1]["locations"][0]), {"path", "line"}
+        )
+
+
+class NoLocationsStreamTest(StreamCase):
+    """搜不到的时候：位置是空的，**不按别的行倒推一个出来**。"""
+
+    def setUp(self):
+        client = FakeLLMClient(
+            [tool_call_reply(("search_code", '{"keyword": "没有"}')), "没找到。"]
+        )
+        self.start(Agent(client=client, tools=ToolRegistry([SearchTool()])))
+
+    def test_a_result_without_a_location_gives_an_empty_list(self):
+        result = self.stream_events("任务甲")[2][1]
+
+        self.assertTrue(result["success"])  # 搜不到不是失败
+        self.assertEqual(result["locations"], [])
+
+
+class RealSearchToolStreamTest(StreamCase):
+    """**真工具**走一遍全链路：真 search_code → 提位置 → Trace → SSE 帧。
+
+    上面几段用的是替身（验的是「位置怎么传」）；这一条把真工具接上去，
+    钉的是「位置提取器和真工具的输出格式对得上」——两者哪天有一个改了格式，
+    这里先红，而不是等到演示时前端一个位置都画不出来。
+    """
+
+    def setUp(self):
+        self.project = tempfile.TemporaryDirectory()
+        self.addCleanup(self.project.cleanup)
+        Path(self.project.name, "alpha.py").write_text(
+            "def 只该在正文里出现的函数():\n    return 1\n", encoding="utf-8"
+        )
+
+        client = FakeLLMClient(
+            [tool_call_reply(("search_code", '{"keyword": "def "}')), "看完了。"]
+        )
+        self.start(
+            Agent(
+                client=client,
+                tools=ToolRegistry([SearchCodeTool(root=Path(self.project.name))]),
+            )
+        )
+
+    def test_the_real_tool_lands_on_the_right_line(self):
+        result = self.stream_events("任务甲")[2][1]
+
+        self.assertEqual(result["locations"], [{"path": "alpha.py", "line": 1}])
+
+    def test_the_matched_code_still_never_leaves_the_server(self):
+        _, _, raw = self.stream("任务甲")
+
+        text = raw.decode("utf-8")
+        self.assertIn("alpha.py", text)  # 位置看得到
+        self.assertNotIn("只该在正文里出现的函数", text)  # 那行代码看不到
 
 
 class ArgumentSummaryTest(StreamCase):

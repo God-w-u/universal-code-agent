@@ -12,6 +12,10 @@
 几十处断言按这个形状写的；LLM 的统计单独攒在 llm_calls 里（只有数字、
 model、usage、错误摘要，没有 prompt、没有回复正文、没有 key）。
 
+14.3 给 TraceEvent 加了 locations（位置信息），给前端画「这次调用落在哪个
+文件的哪一段」。**正文照旧不进 Trace**：extract 只取 path/line/symbol/kind
+这几个字段（见 tools/locations.py 的分寸），提不到就是空列表。
+
 注意：本模块只依赖标准库，不导入 tools / llm / agent 里的任何东西（llm
 只在 TYPE_CHECKING 里出现，运行时不存在这条依赖）。tools/executor.py 调用
 这里的 Trace，反过来这里不依赖它，避免形成导入环。
@@ -31,7 +35,13 @@ TOOL_CALL = "tool_call"
 
 @dataclass(frozen=True)
 class TraceEvent:
-    """一条执行记录。"""
+    """一条执行记录。
+
+    locations（14.3 追加的最后一个字段）：这次调用落在哪些文件的哪几行，
+    由 tools/locations.py 从工具返回正文里**只取位置**得来（正文本身照旧
+    不进 Trace）。默认空列表——失败、认不出来、白名单外的工具都是空。
+    加在最后是为了不打乱既有位置参数的调用。
+    """
 
     type: str
     tool: str
@@ -39,6 +49,7 @@ class TraceEvent:
     success: bool = False
     error: str = ""
     duration_seconds: float = 0.0
+    locations: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """转成可以直接 json.dumps 的普通字典。
@@ -53,6 +64,7 @@ class TraceEvent:
             "success": self.success,
             "error": self.error,
             "duration_seconds": self.duration_seconds,
+            "locations": self.locations,
         }
 
 
@@ -104,8 +116,13 @@ class Trace:
         success: bool,
         error: str = "",
         duration_seconds: float = 0.0,
+        locations: list[dict[str, Any]] | None = None,
     ) -> TraceEvent:
-        """记下一次工具调用，返回刚记下的那条。"""
+        """记下一次工具调用，返回刚记下的那条。
+
+        locations 由调用方（tools/executor.py）从返回正文里提好再给进来，
+        这一层不认识工具、也不碰正文——给什么记什么，顺手复制一份。
+        """
         event = TraceEvent(
             type=TOOL_CALL,
             tool=tool,
@@ -114,6 +131,7 @@ class Trace:
             success=success,
             error=error,
             duration_seconds=duration_seconds,
+            locations=[dict(item) for item in (locations or [])],
         )
         self.events.append(event)
         self._notify(self._on_tool_end, event)

@@ -72,6 +72,10 @@ class TraceStreamer:
     事件带这两个字段）。start / completed / error / cancelled / timed_out
     由 api/server.py 发，本来就带着；tool_start / tool_result 保持一字不差
     ——它们从 13.2 起就是这个形状，前端和几十处断言按它写的。
+
+    14.3 的唯一改动：tool_result 多带一个 locations（这次调用落在哪些文件
+    的哪几行），好让工作台画代码位置。**只加这一个键**——tool_start 一字
+    不改，正文、参数值、prompt 一概照旧不推（见 on_tool_end）。
     """
 
     def __init__(
@@ -108,6 +112,10 @@ class TraceStreamer:
 
         **不带正文**：只给成没成、多久、错在哪（截断），要看内容让前端
         自己拿位置去 read_file——和工具层的分寸一致。
+
+        locations（14.3）是这条分寸里的例外，也是唯一的例外：它不是正文，
+        是「落在哪几行」的坐标（tools/locations.py 从正文里只挑出位置字段，
+        条数和长度都有上限），前端拿它画完还是得去 read_file 才看得到内容。
         """
         self.send(
             "tool_result",
@@ -116,6 +124,7 @@ class TraceStreamer:
                 "success": event.success,
                 "duration_seconds": round(event.duration_seconds, 3),
                 "error": shorten(event.error) if event.error else "",
+                "locations": event.locations,
             },
         )
 

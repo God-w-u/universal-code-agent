@@ -14,12 +14,17 @@
 
 13.2 起还多一句「要开始跑了」的通知（trace.start_tool_call）：在工具真正
 执行**之前**发出去，给流式接口实时推进度用。它同样只通知、记录不了什么。
+
+14.3 起，成功的那次调用还顺手从返回正文里提一次位置（tools/locations.py，
+只取 path/line/symbol/kind，正文不进 Trace）——工作台靠它画出「落在哪个
+文件的哪一段」。提不出来就是空列表，不影响任何既有行为。
 """
 
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from tools import locations
 from tools.base import ToolError
 from tools.registry import ToolRegistry
 
@@ -103,7 +108,12 @@ class ToolExecutor:
     def _record(
         self, name: str, arguments: dict[str, Any], result: ToolResult
     ) -> None:
-        """把这次调用记进 Trace。成功失败走同一条路，记录不会漏。"""
+        """把这次调用记进 Trace。成功失败走同一条路，记录不会漏。
+
+        失败的不提位置：错误文本里不会有可信的位置（见 tools/locations.py
+        的白名单那条）。成功的那一下顺手提一次——**只留位置，不留正文**，
+        正文在这里还是原样返回给 Agent 的，只是不进 Trace。
+        """
         if self.trace is None:
             return
         self.trace.record_tool_call(
@@ -112,7 +122,22 @@ class ToolExecutor:
             success=result.success,
             error=result.error,
             duration_seconds=result.metadata["duration_seconds"],
+            locations=self._locations(name, result),
         )
+
+    @staticmethod
+    def _locations(name: str, result: ToolResult) -> list[dict[str, Any]]:
+        """从返回正文里提出位置信息；提不出来（或这层出了岔子）就是空。
+
+        失败要兜住：执行层答应过永不向外抛异常，提位置是纯附加的活儿，
+        不能因为它把正常的一轮任务带崩。
+        """
+        if not result.success:
+            return []
+        try:
+            return locations.extract(name, result.content)
+        except Exception:
+            return []
 
     def _failed(self, name: str, started: float, message: str) -> ToolResult:
         return ToolResult(

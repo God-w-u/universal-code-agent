@@ -1,0 +1,12 @@
+event: start
+data: {"task": "算一下 1+1（中文字段也要原样回来）", "session_id": "130c9018944f4d2581ff11c8544fdd02", "run_id": "48cd904c3754493e921f97f090f87d46"}
+
+event: tool_start
+data: {"tool": "calculator", "arguments": {"expression": "1+1"}}
+
+event: tool_result
+data: {"tool": "calculator", "success": true, "duration_seconds": 0.0, "error": ""}
+
+event: completed
+data: {"success": true, "answer": "算完了：2", "session_id": "130c9018944f4d2581ff11c8544fdd02", "run_id": "48cd904c3754493e921f97f090f87d46"}
+

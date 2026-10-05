@@ -10,7 +10,8 @@ SDK 换成脚本化的假货（tests/test_llm_retry.py 的 ScriptedAPI），想�
 - llm_* 帧的形状：带 session_id + run_id，只有数字和名字，没有 prompt、
   没有回复正文、没有 key（键逐个钉死，多一个键就是多泄一样东西）；
 - 重试在流里长什么样：一跳一对 llm_start / llm_end，completed 只有一次；
-- 老事件一个不少也不变形：tool_start / tool_result 还是 13.2 那个形状；
+- 老事件一个不少：tool_start 还是 13.2 那个形状，tool_result 只多了 locations
+  （14.3 加的位置信息，见 on_tool_end）；
 - 退避期间整轮超时 / 客户端按停照样能收场（timed_out / cancelled），
   退避配得再长也拖不住它们。
 
@@ -194,13 +195,16 @@ class LlmStreamEventsTest(StreamCase):
                 "completed",
             ],
         )
-        # tool_start / tool_result 还是 13.2 那个形状（没有多出 session_id 之类）
+        # tool_start 还是 13.2 那个形状（没有多出 session_id 之类）
         self.assertEqual(events[3][1], {"tool": "calculator", "arguments": {"expression": "1+1"}})
         result = events[4][1]
         self.assertEqual(result["tool"], "calculator")
         self.assertTrue(result["success"])
         self.assertEqual(result["error"], "")
         self.assertNotIn("session_id", result)
+        # 14.3 起 tool_result 只多了 locations 一个键；calculator 不在位置白名单里，
+        # 所以是空的——它算出来的数字不是「落在哪个文件哪一行」
+        self.assertEqual(result["locations"], [])
         # 两次模型调用：一次要工具、一次收尾。attempt_count 是**这一次调用**
         # 试了几跳（不是这一轮的第几次调用），所以两边都是 1
         self.assertEqual(

@@ -31,5 +31,13 @@ repair_history/
 # 不在项目里；这行是兜底：有人把 store 指到项目内时数据也别入库）
 memory.jsonl
 
+# 前端（frontend/）：依赖装了一堆，构建产物每次都能重来，都不入库。
+# 那边的 .env / .env.example 由上面「本机配置 / 密钥」那几条管（不带斜杠的
+# 模式在任意层都匹配），这里不重复写
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/coverage/
+
 # Windows 快捷方式
 *.lnk

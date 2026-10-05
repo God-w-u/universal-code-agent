@@ -11,6 +11,7 @@
 - **Sandbox**：命令执行的统一接口，local / docker 两种后端（`sandbox/`）；
 - **改完自动验证 + 修复循环**：C/C++ 先编译 / 构建再跑测试，验不过接着修，修不动按规矩停（`agent/verify.py`、`agent/repair.py`）；
 - **HTTP API**：标准库实现的 JSON + SSE 接口，带会话、协作式取消、整轮超时（`api/`）；
+- **Agent 工作台**：React + TypeScript 单页前端（`frontend/`），SSE 实时过程 —— 工具卡片 / 代码位置 / 调用链 / 运行时间线，会话记录只存在本机浏览器里；
 - **工程化**：一键测试脚本（`run_tests.bat` / `run_tests.py`）+ 静态检查（ruff / mypy，见「静态检查」一节）+ GitHub Actions CI（`.github/workflows/ci.yml`）。
 
 ## 目录
@@ -23,6 +24,7 @@
 - [CI](#ci)
 - [启动 API](#启动-api)
 - [命令行对话](#命令行对话)
+- [启动前端（React）](#启动前端react)
 - [能力概览](#能力概览)
 - [Docker Sandbox 的前置条件和测试 skip 原因](#docker-sandbox-的前置条件和测试-skip-原因)
 - [Embedding：可选依赖与降级](#embedding可选依赖与降级)
@@ -58,7 +60,10 @@ universal-code-agent/
 ├── tools/           # 12 个工具：list_files / read_file / search_code / code_summary /
 │                    #   run_command / run_tests / compile / build / edit_file /
 │                    #   calculator / search_code_chunks / call_graph
+│                    #   locations.py：工具输出 → 位置信息（给工作台用，本身不是工具）
 ├── api/             # HTTP 服务（python -m api）：server / sessions / runs / sse
+├── frontend/        # React + TypeScript 前端（Vite）：会话 + Agent 工作台 + SSE 实时过程
+│                    #   工具卡片 / 代码位置 / 调用链 / 运行时间线（14.3）
 ├── tests/           # 全部单元测试（离线，用替身对象）；fixtures/cpp 是 C++ 评估语料
 ├── docs/
 │   ├── PHASES.md    # 开发阶段记录（9.5 ~ 6.7 的原文存档）
@@ -153,7 +158,7 @@ python run_tests.py               # 任何 Python 解释器：自动切到 .venv
 **测试不联网、不需要 API Key、不加载任何真实模型、不碰 Docker**：全部用替身对象；需要这些能力的用例自己 skip。当前实测（2026-10-05，Windows 11 / Python 3.12.10）：
 
 ```
-Ran 2360 tests in 109.813s
+Ran 2474 tests in 112.860s
 OK (skipped=13)
 ```
 
@@ -203,6 +208,8 @@ RAG 效果回归单独跑：
 
 两个 job 都只做三件事：建 `.venv` → `pip install -r requirements-dev.txt` → 跑检查 / 测试。静态检查只放在 Linux job：它和平台无关，Windows job 的职责就是把 `.bat` 那一条路走通。**不需要 API Key、Docker daemon、真实 embedding 模型**，也不下载模型；任何一步失败退出码就非 0，job 直接红。不跳过任何测试来迎合 CI。
 
+CI 目前**只覆盖 Python 那一半**：前端的三条（`npm run typecheck` / `npm test` / `npm run build`）要本地手动跑，见上面「前端自己的检查」。
+
 ## 启动 API
 
 ```bash
@@ -248,10 +255,12 @@ curl -N -X POST http://127.0.0.1:8000/api/run/stream \
 | `llm_start` | model / attempt / max_attempts（prompt 一个字不推） |
 | `llm_end` | 成没成 / 耗时 / 试了几次 / token 用量 / 错误摘要 |
 | `tool_start` | 工具名 + 参数摘要（值截断到 120 字符，**不推正文**） |
-| `tool_result` | 成没成 / 耗时 / 错误摘要（**不推工具返回正文**） |
+| `tool_result` | 成没成 / 耗时 / 错误摘要 / `locations`（代码位置，见下；**不推工具返回正文**） |
 | `completed` | success / answer / session_id / run_id（最终回答就在这） |
 | `cancelled` / `timed_out` | 这一轮被停下的终态（同样 200，不是 5xx） |
 | `error` | 这一轮失败（模型调用失败 / Agent 失败 / 意外异常） |
+
+`tool_result` 里那个 `locations` 是**位置，不是内容**：每条只有 `path` / `line` / `end_line` / `symbol` / `kind` 五个字段，从工具**自己固定的**输出格式里按白名单提出来（`tools/locations.py`），一次最多 50 条。它做的是「把 `search_code` 找到的 `文件:行号` 变成前端上能看、能复制的位置卡片」这件事，**工具返回正文一个字都不进这一帧**——命中行的代码、RAG 的分数与命中原因、编译器的诊断原文，全都留在服务端。白名单目前是 `search_code` / `search_code_chunks` / `call_graph` / `compile` / `build` / `edit_file`；别的工具（`run_command` / `run_tests` / `calculator` …）一律给空数组——往任意输出里捞「文件:行号」会捞出一堆似是而非的东西，**不猜、不倒推**。
 
 ### 会话
 
@@ -280,6 +289,106 @@ python main.py
 ```
 
 输入问题回车即可，输入 `exit` / `quit` 退出；同一进程内的对话保留上下文，可以直接追问。每轮回答之前先打这一轮的工具调用记录（Trace）。启动横幅会打出当前模型、全部工具名、embedding 模式、Memory 状态，一眼看清这次跑的是什么配置。
+
+## 启动前端（React）
+
+单页 Web 前端（Agent 工作台）：左边是会话列表（新建 / 当前高亮 / 删除），右边是当前会话 —— 顶部标题 + 状态，中间按「用户任务 → 运行状态 → 工具/模型调用（默认折叠，点开是位置卡片 / 调用链 / 时间线）→ 最终回答」列出来，底部是任务输入框 + 运行 / Cancel。接口还是原来那五条、没有新增：14.3 唯一的后端改动是 `tool_result` 帧多带一个 `locations`（见上面「SSE 事件」），**只加字段、不加接口**，Agent 核心没动。
+
+```bash
+# 1) 后端（一个终端）。先把前端的地址加进允许列表，在 .env 里写：
+#      API_CORS_ORIGINS=http://localhost:5173
+python -m api                              # 默认 127.0.0.1:8000
+
+# 2) 前端（另一个终端）
+cd frontend
+npm install                                # 第一次才要；拉过新代码之后也要跑一次
+npm run dev                                # http://localhost:5173
+```
+
+然后浏览器打开 `http://localhost:5173`：写一句任务 → 运行，做没做完都看得到；跑着的时候可以 Cancel。
+
+前端依赖不多：运行时只有 `react` / `react-dom` 和渲染回答用的 `react-markdown` / `remark-gfm`；开发期是 `vite` / `typescript` / `vitest` / `jsdom`。版本锁在 `frontend/package-lock.json`（由 `npm install` 维护，不手改）。
+
+### 后端地址怎么配（VITE_API_BASE_URL）
+
+前端的环境变量在 `frontend/.env`（从 `frontend/.env.example` 复制，**不要提交**）：
+
+| `VITE_API_BASE_URL` | 什么时候用 |
+| --- | --- |
+| 不写这行 | 用后端默认地址 `http://127.0.0.1:8000`（本地开发就是它） |
+| `VITE_API_BASE_URL=`（空值） | 同源 `/api/...`：前端和后端由同一个域名 + 端口提供时 |
+| `VITE_API_BASE_URL=http://别的主机:8000` | 后端在别处 |
+
+**不管选哪种，都要把页面地址加进后端的 `API_CORS_ORIGINS`**（例如 `http://localhost:5173`），改完重启后端。这不是「跨源才要配」：浏览器发 POST 时一定会带 `Origin` 头，而后端的设计是「带了 `Origin` 就必须在允许列表里」（`api/server.py` 的 `_origin_allowed`），**同源也照样挡**——这一条正是它防「本机别的网页对本服务发请求」的办法（本服务的 `run_command` / `edit_file` 是真会动系统的）。
+
+没配会怎样：页面左下角直接显示「来源不被允许」，并把要加的那一行原样写出来（探活也会吃 403，所以进页面就能看到，不用等到运行）。忘了配就点运行的话，错误提示里同样带着这句地址。
+
+顺带说一句：`npm run dev` **没有**配 `/api` 转发。转发并不能绕开后端的来源检查（浏览器发 POST 一定带 `Origin`，转发是原样交给后端的），只会让「不用配 CORS」这个错印象传下去。
+
+后端配了 `API_TOKEN` 的话，在页面左下角填 Token（只存在内存里，刷新就没了，不写进浏览器存储）。
+
+### 前端自己的检查
+
+```bash
+cd frontend
+npm run typecheck   # tsc：浏览器代码 / vite.config / 测试 三份配置分别查
+npm test            # vitest：SSE 解析 + 记录生成 + 落盘 + 工具 / 位置 / 调用链卡片 + Markdown 安全 + 接口联调
+npm run build       # 类型检查 + 生产构建到 frontend/dist
+```
+
+测试不联网、不需要 API Key：假后端是本机回环上的一个 `node:http` 服务器，`useRun` 那几条把网络层换成脚本，其余全是真的（真的记录、真的 localStorage、真的 jsdom）。
+
+### 记录（Transcript）存在哪
+
+刷新页面、切会话都不丢；**只存在你自己的浏览器里**（localStorage），不上传、后端也不知道有这份东西。
+
+| 存什么 | 说明 |
+| --- | --- |
+| 每个会话一份，键是 `uac.frontend.transcript.v1.<session_id>` | 一份坏掉不牵连别的；删会话就是删这一个键 |
+| 任务原文、每一轮的状态与时间、最终回答（Markdown 原文） | 回答最多留 20000 字，超了截断并写明「本地只留了前一段」 |
+| 工具 / 模型调用的**摘要**：名字、成功失败、用时、tokens、错误那句话；工具行另带**分类**（检索 / 读文件 / 改文件 / 调用图 / 跑命令 / 编译构建 / 计算 / 其它）、一行「在看什么」，以及**位置**（`路径:行号` / 符号 / 类型） | 每轮最多留 200 条过程记录；超了只丢过程，**次数统计照样准**。位置每次调用最多留 12 条，另有总数（界面说「还有 N 处」） |
+| 每个会话最多 20 轮 | 再往前的丢掉（localStorage 不是数据库） |
+
+**不存的**（有意为之）：
+
+- **API Token**——它只活在页面内存里，刷新就没了；写进 localStorage 是被测试钉死不允许的（`useRun.test.tsx` 里有一条专门断言盘上既没有 Token 也没有含 `token` 的键）。
+- **原始 SSE JSON**——事件读进来就翻译成记录，字节不落地。
+- **工具的调用参数和被读文件的内容**——参数一个键都不落地（记录里根本没有 `arguments` 这个字段）。工具行上那一句「在看什么」是从参数里**派生**出来的白名单字段（`read_file` 的路径、`run_command` 的命令、`call_graph` 的函数名……），只此一行；参数里 `old_text` / `new_text` / `content` 这类可能带着整份源码的值，连同一行没白名单的键，全扔掉。位置信息同理：只留 `path` / `line` / `symbol` / `kind`，**行号旁边的代码一个字不留**。Prompt 也一概不存。
+
+几条要说明的行为：
+
+- **刷新之后不会显示「运行中」**：读回来的每一份记录都会把「还在跑」的那些轮标成**已中断**，并写明「后端可能还在跑——断线不等于取消」。想要结果就重新问一次；不显示假的 Running，是因为那会让人一直等一个永远不会来的结果。
+- **删除会话会把本机那份记录一起删掉**；「清空记录」只清本机这份，后端那个会话（它的历史）不动。
+- **本地存的坏了就当没存过**：JSON 解析不了、版本对不上、字段类型不对，一律退回空记录，页面不会因此崩；手改过的数据也不会被当成正常记录显示。
+- **浏览器存不下时（配额满 / 隐私模式）**：先清掉更早的会话腾地方，还不行就砍自己最旧的几轮。真的写不进去时页面顶上会说一句「本机存不下记录了」——这一轮照样跑完，只是这次的结果留不到下次打开。
+
+### Markdown 与安全
+
+Agent 的最终回答按 Markdown 渲染（标题、列表、表格、代码块），用的是 `react-markdown` + `remark-gfm`，安全性靠**结构**而不是靠过滤字符串：
+
+- 全程转成 React 元素，**没有 `dangerouslySetInnerHTML`**；
+- **不装 `rehype-raw`**（那是唯一会把 Markdown 里的 HTML 当 HTML 渲染的插件）。所以回答里写 `<img src=x onerror=...>`、`<script>...` 只会**原样显示成一串字**；`a < b` 这种比较符也照样是文本；
+- 链接地址由 `react-markdown` 的默认转换器过一遍：`javascript:` / `data:` 这类协议会被换成空串；
+- 回答里的图片**不自动加载**——只显示成「[图片] 说明」的链接（不然一句话就能拿你的 IP 去外面报个信）；
+- 外链一律新窗口打开并带 `rel="noreferrer noopener"`。
+
+上面每一条都有测试钉着（`src/components/Markdown.test.tsx` 往渲染里灌 XSS payload，然后翻 DOM 断言没有 `<script>` / `<img>` / `on*` 属性）。哪天有人为了「支持 HTML」加上 `rehype-raw` 或改成 `dangerouslySetInnerHTML`，那些用例会红。
+
+### 前端这一层做了什么
+
+- **SSE 优先**：默认走 `POST /api/run/stream` 边跑边显示，九种事件（`start` / `tool_start` / `tool_result` / `llm_start` / `llm_end` / `completed` / `cancelled` / `timed_out` / `error`）全都处理，终态一定落到界面上。用 fetch + ReadableStream 自己读流——浏览器的 `EventSource` 发不了 POST、也带不了 `Authorization` 头，用不了。
+- **只显示该显示的**：工具行是 `🔧 工具名 / 成功 / 用时`，模型行是 `LLM / 模型名 / attempt 2/3 / 用时 / tokens`，出错时多一句错误摘要。**不显示** prompt、API Key、工具参数原文和 Python 异常栈——后端发来的 `error` 里如果是不认识的那种（`异常类型: 消息`），压成一句白话再显示（原文进浏览器 console）。
+- **一轮的样子**：用户任务 → 运行状态（跑着的时候显示 run_id 短号、当前在干什么、工具几次、模型几次、已跑多久、最近一条事件）→ 过程事件（**默认折叠**，点开才看）→ 最终回答。历史轮次整块折叠，长日志不会把回答淹掉。
+- **代码分析看得见**（14.3）：工具行按**类型**分（检索 / 读文件 / 改文件 / 调用图 / 跑命令 / 编译构建 / 计算 / 其它），还带着状态、用时和一句「在看什么」（做的是什么，不是参数原文）。认不出来的工具**不崩**：归到「其它」，失败就按失败显示。点开一条工具事件，有位置信息就是**位置卡片**（`路径:行号`、符号、类型），带**复制路径** / **复制 `path:行号`** 两个按钮；`call_graph` 走 `path` 查法时画成 `A → B → C` 的**调用链**（有环就画到重复处为止，超过 8 个节点截断并写明「还有 N 跳」，不画图库、纯 DOM）；检索类工具给命中条数。位置只显示后端给了的——**没有位置就什么都不显示，绝不按别的行倒推一个行号**。
+- **不对做不到的事装作能做到**：位置卡片里的「在编辑器打开」按钮是**灰的**，写明原因（浏览器打不开本地文件，要编辑器支持才行）。不做一个点了没反应的假按钮。
+- **时间线**：每条过程事件左边一列时间戳（`09:31:02`），按事件顺序排。这个时刻是**浏览器收到那一帧的本地时间**——SSE 帧里本来就没有时间字段，所以不编一个「后端时间」出来充数。历史轮次同样看得到，一行的厚度，不占版面。
+- **状态分两处**：会话（有哪些、哪个在用）和当前这一轮 Run（跑没跑、什么终态）是两套状态，互不干扰。
+- **取消用真 run_id**：后端在 `start` 事件里发的那个，前端不自己编；它到之前 Cancel 是灰的。后端收下取消之后如果迟迟不发终态事件（连接卡住），10 秒宽限期一到就按「已取消」记下来并写明原因——界面不会永远转圈。
+- **流断了不冒充停止**：断线不等于取消（后端的约定），所以只说「结果看不到了」，不说「已停止」。
+- **同一轮的事件不会记两遍**：每一轮记着自己吃进去多少帧，重复的帧直接丢掉；已经终态的那一轮再收到什么都不改动。
+- **错误说清楚下一步**：连不上 / 来源不被允许（403，左下角直接把要加进 `API_CORS_ORIGINS` 的那一行写出来）/ 400、404 用后端自己的话（说的就是这次请求哪儿不对）/ 5xx 压成一句中文（后端的 Python 异常原文只进浏览器 console）。网络层失败也会在本机记一条 failed，不会「什么都没发生」。
+- **会话记在前端**：后端没有「列出会话」的接口、也没把会话落盘，所以前端用 localStorage 记着用过哪些 `session_id`（id / 标题 / 时间）以及每个会话的记录（见上面「记录（Transcript）存在哪」）；后端说它不存在了（404）就把这条划掉，重新发一次会开新会话。
+- **不放密钥**：Token 只在内存里，刷新就没了，**不写进 localStorage**（有测试钉着）；它只以 `Authorization` 头随请求发给后端。渲染走 React 元素，全项目没有 `dangerouslySetInnerHTML`。
 
 ## 能力概览
 
@@ -347,6 +456,8 @@ python main.py
 - **对话历史**：命令行进程退出即丢；API 会话有 TTL，过期即清。都没有跨进程持久化（Memory 存的是任务记录，不是对话）。
 - **Windows 上符号链接测试会 skip**：没开开发者模式 / 没权限时创建不了符号链接，4 个用例跳过（代码路径有直接覆盖，Linux CI 上会真跑）。
 - **Docker sandbox 目前不在默认装配里**：工具默认走 LocalSandbox，换容器要显式给 `kind="docker"` + 镜像；环境变量开关还没有。
+- **工作台的位置是「后端给什么显示什么」**：只有白名单工具（`search_code` / `search_code_chunks` / `call_graph` / `compile` / `build` / `edit_file`）命中固定输出格式才有位置卡片；`run_command` 这类工具即使输出里出现「文件:行号」也不显示（宁可没有，也不猜）。**「在编辑器打开」做不到**——浏览器打不开本地文件，那个按钮是灰的，只能复制路径。
+- **调用链是有损的**：只有 `call_graph` 的 `path` 查法画成 `A → B → C` 的链，一次最多 8 个节点，有环画到重复处为止；`callers` / `callees` 显示成位置列表，不是图。是纯 DOM 拼的，不是图形库、也不是完整调用图视图。
 - **API 是单机定位**：标准库 `ThreadingHTTPServer`，没有 TLS、没有多进程；对局域网开放前先配 `API_TOKEN` 和 `API_CORS_ORIGINS`。
 
 ## 更多文档
